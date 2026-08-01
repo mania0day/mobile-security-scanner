@@ -1,0 +1,2 @@
+class JailbreakDetectionError(Exception):
+    pass

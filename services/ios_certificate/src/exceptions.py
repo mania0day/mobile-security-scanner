@@ -1,0 +1,2 @@
+class CertificateAnalyzerException(Exception):
+    pass

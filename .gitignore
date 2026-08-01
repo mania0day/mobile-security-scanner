@@ -1,0 +1,20 @@
+.env
+
+# Local/generated scan artifacts
+backend/output/
+backend/logs/
+frontend/nextjs/.next/
+frontend/nextjs/node_modules/
+frontend/nextjs/.turbo/
+frontend/nextjs/tsconfig.tsbuildinfo
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Node / build caches
+node_modules/

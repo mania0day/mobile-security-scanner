@@ -1,0 +1,2 @@
+# No extra dependencies.
+# Uses: adb (installed in base image), Python stdlib only.
