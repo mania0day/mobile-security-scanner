@@ -157,10 +157,19 @@ class ADBService:
         self.device.wifi_mac = getprop("ro.wifi.mac") or getprop("wifi.interface.mac")
         self.device.bluetooth_mac = getprop("ro.bt.mac") or getprop("persist.vendor.bt.mac")
 
-        # IMEI / MEID (requires elevated privs; best-effort)
+        # IMEI / MEID via the iphonesubinfo AIDL service. `service call` takes a
+        # numeric transaction CODE, not a method name — passing the method name
+        # (as this used to) is invalid syntax and always no-ops. Even with the
+        # correct numeric code this is expected to fail on Android 10+: Google
+        # locked getDeviceId()/getImei() behind READ_PRIVILEGED_PHONE_STATE
+        # (signature|privileged|role), which the ADB `shell` user never holds —
+        # confirmed empirically (SecurityException, error -4) even with USB
+        # debugging enabled. No root, no IMEI via ADB; that's by OS design, not
+        # a bug here. Kept best-effort for older/vendor builds that still leak
+        # it via getprop below.
         imei_candidates = []
         for phone_slot in ("1", "2"):
-            imei = shell(f"service call iphonesubinfo getDeviceIdForPhone {phone_slot} 2>/dev/null")
+            imei = shell(f"service call iphonesubinfo 1 i32 {phone_slot} 2>/dev/null")
             imei_clean = self._parse_hex_string(imei)
             if imei_clean and len(imei_clean) >= 14:
                 imei_candidates.append(imei_clean)
@@ -185,15 +194,21 @@ class ADBService:
             if fallback_imei2:
                 self.device.imei_slot2 = fallback_imei2
 
-        # MEID
-        meid = shell("service call iphonesubinfo getMeidForPhone 1 2>/dev/null")
+        # MEID — transaction code is a best-effort guess (iphonesubinfo's AIDL
+        # interface ordering varies across AOSP/vendor builds and isn't worth
+        # chasing exactly: _parse_hex_string above now safely returns "" for
+        # anything that isn't a clean successful parcel decode, so a wrong
+        # code just yields no data rather than misattributed data — same
+        # practical outcome as the READ_PRIVILEGED_PHONE_STATE block on
+        # Android 10+ that makes this fail regardless of the exact code).
+        meid = shell("service call iphonesubinfo 2 i32 1 2>/dev/null")
         meid_clean = self._parse_hex_string(meid)
         self.device.meid = meid_clean if meid_clean else (getprop("ril.meid") or None)
 
-        # Phone number / subscriber info (best-effort, slot-aware)
+        # Phone number / subscriber info (best-effort, slot-aware) — same caveat as MEID above.
         phone_by_slot: dict[str, str] = {}
         for slot in ("1", "2"):
-            sub_info = shell(f"service call iphonesubinfo getSubscriberForPhone {slot} 2>/dev/null")
+            sub_info = shell(f"service call iphonesubinfo 5 i32 {slot} 2>/dev/null")
             sub_clean = self._parse_hex_string(sub_info)
             if sub_clean and len(sub_clean) >= 3:
                 phone_by_slot[slot] = sub_clean
@@ -290,19 +305,30 @@ class ADBService:
 
     @staticmethod
     def _parse_hex_string(s: str) -> str:
-        """Parse hex-dump output from 'service call' commands into a readable string."""
+        """Parse hex-dump output from 'service call' commands into a readable string.
+
+        Returns "" for anything that isn't a clean, successfully-decoded hex-pair
+        dump. `service call` prints the exact same "Result: Parcel(...)" format
+        for a thrown exception (e.g. the SecurityException Android 10+ raises
+        when the caller lacks READ_PRIVILEGED_PHONE_STATE, which the ADB shell
+        user never holds) as it does for a real result — a previous version of
+        this function fell back to returning that raw text when no hex pairs
+        were found, which silently stored the literal exception dump as if it
+        were the IMEI/MEID/phone number. Never do that: no clean parse means no
+        data, not "return whatever we got."
+        """
         import re
         if not s:
             return ""
         # Try to extract hex pairs: '0x30 0x31' -> '01', then decode
         hex_pairs = re.findall(r"0x([0-9A-Fa-f]{2})", s)
-        if hex_pairs:
-            try:
-                chars = [chr(int(h, 16)) for h in hex_pairs if int(h, 16) < 128 and chr(int(h, 16)).isprintable()]
-                return "".join(chars).strip()
-            except Exception:
-                pass
-        return s.strip()
+        if not hex_pairs:
+            return ""
+        try:
+            chars = [chr(int(h, 16)) for h in hex_pairs if int(h, 16) < 128 and chr(int(h, 16)).isprintable()]
+            return "".join(chars).strip()
+        except Exception:
+            return ""
 
     def _save(self) -> None:
         dev = self.device
