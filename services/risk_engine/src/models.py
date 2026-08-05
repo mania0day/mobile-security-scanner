@@ -31,6 +31,8 @@ class DeviceRisk:
     selinux_status: str = ""
     is_debuggable: bool = False
     bootloader_unlocked: bool = False
+    oem_unlock_allowed: bool | None = None
+    severity_tier: str = "Safe"
 
 
 @dataclass

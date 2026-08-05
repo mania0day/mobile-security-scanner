@@ -8,7 +8,7 @@ from evaluator import ChecklistEvaluator
 
 def test_bootloader_unlock_is_warned_instead_of_failed():
     evaluator = ChecklistEvaluator()
-    verdict, checklist = evaluator.evaluate(
+    verdict, checklist, severity_tier = evaluator.evaluate(
         device_info={
             "serial": "test-device",
             "model": "Pixel 8",

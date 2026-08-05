@@ -146,11 +146,17 @@ class ScoreGauge(Flowable):
         c.setLineWidth(14)
         c.circle(cx, cy, r, stroke=1, fill=0)
 
+        # ReportLab's own bezierArc() divides by sin(halfAng) internally and
+        # raises ZeroDivisionError for an arc extent of exactly 0 or a full
+        # +/-360 — both reachable here at score 0 (clean device) or 100.
         extent = -360 * (self.score / 100.0)
-        c.setStrokeColor(color)
-        c.setLineWidth(14)
-        c.setLineCap(1)
-        c.arc(cx - r, cy - r, cx + r, cy + r, 90, extent)
+        if extent != 0:
+            if abs(extent) >= 360:
+                extent = -359.99 if extent < 0 else 359.99
+            c.setStrokeColor(color)
+            c.setLineWidth(14)
+            c.setLineCap(1)
+            c.arc(cx - r, cy - r, cx + r, cy + r, 90, extent)
 
         c.setFillColor(INK)
         c.setFont("Helvetica-Bold", 26)
@@ -266,6 +272,17 @@ def _status_color(status: str):
 def _level_color(level: str):
     l = (level or "").upper()
     return {"CRITICAL": CRIT_C, "HIGH": HIGH_C, "MEDIUM": MED_C, "LOW": LOW_C}.get(l, MUTED)
+
+
+def _severity_color(tier: str):
+    t = (tier or "").lower()
+    return {
+        "safe": PASS_C,
+        "low risk": MED_C,
+        "vulnerable": WARN_C,
+        "compromisable": HIGH_C,
+        "critical": FAIL_C,
+    }.get(t, MUTED)
 
 
 def _checklist(data: dict) -> List[dict]:
@@ -393,6 +410,16 @@ def generate_pdf_report(data: dict, output_filepath: str) -> str:
             return "REDACTED"
         return str(v or "—")
 
+    if safe:
+        # The device serial is itself an identifying field — redact it, and make
+        # sure scan_id (printed on every page header/footer via NumberedCanvas)
+        # never silently falls back to the raw serial when it wasn't explicitly
+        # set. scan_id should already come from the DB scan id (not the device
+        # serial) — this is just a defensive guard against that fallback.
+        if scan_id == serial:
+            scan_id = data.get("scan_id") or "REDACTED"
+        serial = "REDACTED"
+
     # ─────────────────────────── COVER ───────────────────────────
     story.append(Spacer(1, 18))
     story.append(Paragraph("MOBILE SECURITY SCANNER", S["brand"]))
@@ -431,8 +458,13 @@ def generate_pdf_report(data: dict, output_filepath: str) -> str:
     ]))
     story.append(verdict_box)
     story.append(Spacer(1, 8))
+    severity_tier = data.get("severity_tier") or "Safe"
+    severity_line = (
+        f"Severity <font color='{_severity_color(severity_tier).hexval()}'><b>{severity_tier.upper()}</b></font> &nbsp;·&nbsp; "
+        if mode != "QUICK" else ""
+    )
     story.append(Paragraph(
-        f"Verdict <b>{verdict}</b> &nbsp;·&nbsp; Risk level <b>{level}</b> &nbsp;·&nbsp; "
+        f"Verdict <b>{verdict}</b> &nbsp;·&nbsp; {severity_line}Risk level <b>{level}</b> &nbsp;·&nbsp; "
         f"<b>{device.get('manufacturer', '')} {device.get('model', '')}</b>".strip(),
         S["cover_meta"],
     ))
@@ -441,6 +473,8 @@ def generate_pdf_report(data: dict, output_filepath: str) -> str:
 
     # Tags strip
     tags = [verdict, mode]
+    if mode != "QUICK":
+        tags.append(severity_tier.upper())
     if device.get("android_version") or device.get("os_version"):
         tags.append(f"OS {device.get('android_version') or device.get('os_version')}")
     fail_n = sum(1 for c in checklist if c.get("status") == "FAIL")
@@ -500,6 +534,8 @@ def generate_pdf_report(data: dict, output_filepath: str) -> str:
          "Bootloader", str(device.get("bootloader") or "—")],
         ["Radio", str(device.get("radio_version") or "—"),
          "Rooted", "YES" if device_risk.get("is_rooted") else "NO"],
+        ["OEM Unlock Allowed", yn(device_risk.get("oem_unlock_allowed")),
+         "Bootloader Unlocked", "YES" if device_risk.get("bootloader_unlocked") else "NO"],
         ["IMEI", mask(device.get("imei")), "IMEI (SIM 2)", mask(device.get("imei_slot2"))],
         ["MEID", mask(device.get("meid")), "Phone", mask(device.get("phone_number"))],
         ["SIM Operator", str(device.get("sim_operator") or "—"),
@@ -528,6 +564,16 @@ def generate_pdf_report(data: dict, output_filepath: str) -> str:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     story.append(meta_table)
+
+    if lock is None:
+        lock_evidence = device.get("screen_lock_evidence") or []
+        if lock_evidence:
+            story.append(Spacer(1, 4))
+            story.append(Paragraph(
+                "Screen lock signals disagreed — treated as Unknown rather than guessing. Evidence: "
+                + "; ".join(str(e) for e in lock_evidence[:3]),
+                S["small"],
+            ))
 
     # ─────────────────────── 3. RISK ANALYTICS ───────────────────────
     story.append(Paragraph("3. Risk Analytics", S["h1"]))
@@ -903,6 +949,11 @@ def generate_one_pager_report(data: dict, output_filepath: str) -> str:
             return "REDACTED"
         return str(v or "—")
 
+    if safe:
+        if scan_id == serial:
+            scan_id = data.get("scan_id") or "REDACTED"
+        serial = "REDACTED"
+
     # ── Header band ──
     story.append(Spacer(1, 2))
     header = Table([[Paragraph("MOBILE SECURITY SCANNER", ParagraphStyle(
@@ -919,9 +970,12 @@ def generate_one_pager_report(data: dict, output_filepath: str) -> str:
         ("BOTTOMPADDING", (0, 1), (-1, 1), 10),
     ]))
     story.append(header)
-    story.append(Spacer(1, 8))
+    story.append(HRFlowable(width="100%", thickness=2, color=TEAL, spaceAfter=10))
 
-    # ── Verdict banner + KPIs ──
+    # ── Score gauge + KPIs ── (mirrors the Full report's cover gauge, sized down for one page;
+    # width matches the frame so the circle still centers on the page like the cover gauge does)
+    story.append(ScoreGauge(score, 528, 110))
+    story.append(Spacer(1, 4))
     story.append(_kpi_table(score, passed, must_fails, crit_apps, S))
     story.append(Spacer(1, 8))
     vb = Table([[
@@ -935,6 +989,12 @@ def generate_one_pager_report(data: dict, output_filepath: str) -> str:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
     story.append(vb)
+    severity_tier = data.get("severity_tier") or "Safe"
+    if mode != "QUICK":
+        story.append(Paragraph(
+            f"Severity <font color='{_severity_color(severity_tier).hexval()}'><b>{severity_tier.upper()}</b></font>",
+            ParagraphStyle("SevTier", fontSize=8, leading=11, textColor=MUTED, alignment=TA_CENTER, spaceBefore=3),
+        ))
     story.append(Spacer(1, 8))
 
     # ── Device snapshot ──
@@ -1023,8 +1083,8 @@ def generate_one_pager_report(data: dict, output_filepath: str) -> str:
         story.append(Paragraph("No checklist data available.", S["body"]))
         story.append(Spacer(1, 8))
 
-    # ── Signature / footer ──
-    story.append(HRFlowable(width="100%", thickness=1, color=LINE, spaceBefore=2, spaceAfter=6))
+    # ── Signature / footer ── (teal accent bookends the page, matching the header's teal rule)
+    story.append(HRFlowable(width="100%", thickness=1.5, color=TEAL, spaceBefore=2, spaceAfter=6))
     foot = Table([[
         Paragraph(f"Report {scan_id} · {mode} · Generated {ts}", S["small"]),
         Paragraph("CONFIDENTIAL — For internal BYOD admission auditing", S["small"]),

@@ -12,4 +12,5 @@ WORKDIR /app/risk_engine
 
 RUN chmod +x entrypoint.sh
 
+USER appuser
 ENTRYPOINT ["./entrypoint.sh"]

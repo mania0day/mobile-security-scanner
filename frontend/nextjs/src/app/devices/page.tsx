@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Smartphone, Trash2, ChevronRight, Apple, Clock, BarChart3 } from 'lucide-react';
+import { Smartphone, Trash2, ChevronRight, Apple, Clock, BarChart3, Search } from 'lucide-react';
 import { DeviceItem, deleteDevice, fetchAllDevices } from '@/lib/api';
 import { formatDate } from '@/lib/utils';
 import { VerdictPill } from '@/components/ui/VerdictPill';
@@ -13,6 +13,17 @@ export default function DevicesPage() {
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+
+  const filteredDevices = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return devices;
+    return devices.filter((d) =>
+      (d.manufacturer || '').toLowerCase().includes(q) ||
+      (d.model || '').toLowerCase().includes(q) ||
+      (d.serial || '').toLowerCase().includes(q)
+    );
+  }, [devices, query]);
 
   const load = async () => {
     setLoading(true);
@@ -40,6 +51,18 @@ export default function DevicesPage() {
         </p>
       </motion.div>
 
+      {!loading && devices.length > 0 && (
+        <div className="relative max-w-sm">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search manufacturer, model, serial…"
+            className="w-full rounded-xl border border-line bg-white py-2.5 pl-9 pr-3 text-sm text-ink placeholder:text-muted focus:border-brand/40 focus:outline-none focus:ring-2 focus:ring-brand/20"
+          />
+        </div>
+      )}
+
       {loading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3, 4].map(i => (
@@ -61,6 +84,18 @@ export default function DevicesPage() {
             Go to dashboard
           </Link>
         </motion.div>
+      ) : filteredDevices.length === 0 ? (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="panel flex flex-col items-center justify-center px-6 py-20 text-center"
+        >
+          <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-canvas shadow-soft">
+            <Search className="h-9 w-9 text-slate-300" />
+          </div>
+          <p className="mt-5 text-base font-semibold text-ink">No devices match your search</p>
+          <p className="mt-1 text-sm text-muted">Try a different manufacturer, model, or serial.</p>
+        </motion.div>
       ) : (
         <motion.div
           className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
@@ -68,7 +103,7 @@ export default function DevicesPage() {
           animate="show"
           variants={{ hidden: {}, show: { transition: { staggerChildren: 0.06 } } }}
         >
-          {devices.map((device) => {
+          {filteredDevices.map((device) => {
             const PlatIcon = device.platform === 'ios' ? Apple : Smartphone;
             return (
               <motion.div

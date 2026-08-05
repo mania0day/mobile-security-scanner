@@ -33,3 +33,4 @@ class Device:
     radio_version: Optional[str] = None
     screen_lock_enabled: Optional[bool] = None
     encryption_enabled: Optional[bool] = None
+    screen_lock_evidence: Optional[list] = field(default_factory=list)

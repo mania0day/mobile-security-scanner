@@ -221,9 +221,10 @@ class ADBService:
         self.device.subscriber_id = getprop("gsm.sim.subscriber_id") or getprop("gsm.sim.subscriber_id.1") or None
         self.device.subscriber_id_slot2 = getprop("gsm.sim.subscriber_id.2") or None
 
-        # Lock screen & encryption status (best-effort)
-        lock_check = shell("locksettings verify --old 2>/dev/null; echo 'EXIT:'$?")
-        self.device.screen_lock_enabled = "EXIT:0" not in lock_check  # heuristic
+        # Lock screen & encryption status (multi-signal — a single heuristic
+        # misreads some OEM builds, e.g. Samsung/Knox, so we cross-check 3
+        # independent signals and only report a confident YES/NO if they agree).
+        self.device.screen_lock_enabled, self.device.screen_lock_evidence = self._probe_screen_lock(shell)
         enc_check = getprop("ro.crypto.state")
         self.device.encryption_enabled = enc_check == "encrypted" if enc_check else None
 
@@ -235,6 +236,57 @@ class ADBService:
             self.logger.info(f"IMEI: {self.device.imei[:6]}****** (last 8 digits redacted)")
         if self.device.sim_operator:
             self.logger.info(f"SIM: {self.device.sim_operator}")
+
+    @staticmethod
+    def _probe_screen_lock(shell) -> tuple[bool | None, list[str]]:
+        """Combine 3 independent signals to determine screen lock state.
+
+        A single heuristic (locksettings verify --old exit code) misreads
+        Samsung/Knox and other OEM-customized builds. If the known (non-empty)
+        signals disagree, or none are readable, report Unknown (None) rather
+        than guessing — a wrong "no lock" claim is worse than an honest unknown.
+        """
+        evidence: list[str] = []
+        signals: list[bool | None] = []
+
+        # Signal 1: locksettings verify (existing heuristic, kept as one vote)
+        lock_check = shell("locksettings verify --old 2>/dev/null; echo 'EXIT:'$?")
+        s1 = ("EXIT:0" not in lock_check) if "EXIT:" in lock_check else None
+        evidence.append(f"locksettings verify --old -> {lock_check.strip()[:100] or '(empty)'}")
+        signals.append(s1)
+
+        # Signal 2: dumpsys device_policy — output format varies by Android
+        # version/OEM, so we match known substrings defensively.
+        dp = shell("dumpsys device_policy 2>/dev/null | grep -i -E 'passwordquality|islockscreendisabled' | head -5")
+        s2 = None
+        low = dp.lower()
+        if "islockscreendisabled=true" in low or "password_quality_unspecified" in low:
+            s2 = False
+        elif "islockscreendisabled=false" in low or any(
+            k in low for k in ("password_quality_numeric", "password_quality_alphabetic",
+                               "password_quality_complex", "password_quality_biometric_weak")
+        ):
+            s2 = True
+        evidence.append(f"dumpsys device_policy -> {dp.strip()[:120] or '(empty)'}")
+        signals.append(s2)
+
+        # Signal 3: secure settings probe — treat empty/null output as "no
+        # data", never as False.
+        lpe = shell("settings get secure lock_pattern_enabled 2>/dev/null")
+        s3 = None
+        v = lpe.strip().lower()
+        if v and v not in ("null", ""):
+            s3 = v == "1"
+        evidence.append(f"settings get secure lock_pattern_enabled -> {lpe.strip() or '(empty)'}")
+        signals.append(s3)
+
+        known = [s for s in signals if s is not None]
+        if not known:
+            return None, evidence
+        if all(k == known[0] for k in known):
+            return known[0], evidence
+        evidence.append("Signals disagree — treating screen lock state as Unknown rather than guessing")
+        return None, evidence
 
     @staticmethod
     def _parse_hex_string(s: str) -> str:
@@ -284,6 +336,7 @@ class ADBService:
                 "subscriber_id_slot2": dev.subscriber_id_slot2,
                 "screen_lock_enabled": dev.screen_lock_enabled,
                 "encryption_enabled": dev.encryption_enabled,
+                "screen_lock_evidence": dev.screen_lock_evidence,
             },
         )
         self.logger.info(f"Saved → {OUTPUT_DIR}/device.json")

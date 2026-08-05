@@ -93,6 +93,8 @@ export interface ScanDetails extends ScanItem {
   subscriber_id_slot2?: string;
   screen_lock_enabled?: number | null;
   encryption_enabled?: number | null;
+  severity_tier?: string;
+  oem_unlock_allowed?: number | null;
 }
 
 export interface DeviceItem {
@@ -198,15 +200,16 @@ export async function fetchScanStatus(): Promise<ScanJobStatus> {
 }
 
 export async function triggerLiveScan(
-  mode: 'minimal' | 'deep' = 'minimal',
+  mode: 'quick' | 'minimal' | 'deep' = 'minimal',
   platform: 'auto' | 'android' | 'ios' = 'auto',
-  serial?: string
+  serial?: string,
+  vtEnabled?: boolean
 ): Promise<ScanJobStatus> {
   try {
     const res = await fetch(`${API_BASE}/scan/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, platform, serial: serial || undefined }),
+      body: JSON.stringify({ mode, platform, serial: serial || undefined, vt_enabled: !!vtEnabled }),
       cache: 'no-store',
     });
     const data = (await res.json()) as ScanJobStatus;

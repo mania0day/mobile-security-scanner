@@ -4,7 +4,7 @@ from config import OUTPUT_DIR, IOS_TIMEOUT
 from models import IOSDeviceInfo
 from shared.logger import get_logger
 from shared.json_writer import write_json
-from shared.ios_utils import get_ios_device_info
+from shared.ios_utils import get_ios_device_info, get_installed_app_bundle_ids
 
 logger = get_logger("IOSDevice")
 
@@ -47,6 +47,8 @@ class IOSDeviceService:
             raw=dev_dict.get("raw", {})
         )
 
+        bundle_ids = get_installed_app_bundle_ids()
+
         out_data = {
             "platform": "ios",
             "is_connected": True,
@@ -56,6 +58,7 @@ class IOSDeviceService:
             "product_type": info.product_type,
             "product_version": info.product_version,
             "build_version": info.build_version,
+            "installed_app_bundle_ids": bundle_ids,
             "error": ""
         }
 

@@ -161,6 +161,7 @@ class ReportGeneratorService:
             "device": self.device,
             "scan_mode": self.risk_assessment.get("scan_mode", "minimal"),
             "verdict": self.risk_assessment.get("verdict", "PASS"),
+            "severity_tier": self.risk_assessment.get("severity_tier", "Safe"),
             "overall_score": self.risk_assessment.get("overall_score", 0),
             "overall_level": self.risk_assessment.get("overall_level", "LOW"),
             "checklist_evaluations": self.risk_assessment.get("checklist_evaluations", []),

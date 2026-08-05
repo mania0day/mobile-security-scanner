@@ -41,6 +41,13 @@ ANDROID_DEEP_PIPELINE: list[str] = [
     "report_generator",
 ]
 
+ANDROID_QUICK_PIPELINE: list[str] = [
+    "adb",               # Device info, IMEI/SIM, screen lock, encryption
+    "root_detection",    # Root + bootloader checks (no APK pipeline)
+    "risk_engine",       # Aggregate & score (device-only)
+    "report_generator",  # Generate report
+]
+
 # Legacy alias
 MINIMAL_PIPELINE = ANDROID_MINIMAL_PIPELINE
 DEEP_PIPELINE = ANDROID_DEEP_PIPELINE
@@ -67,6 +74,13 @@ IOS_DEEP_PIPELINE: list[str] = [
     "yara",                 # YARA malware scan
     "mvt",                  # mvt-ios check
     "mobsf",                # MobSF iOS static analysis
+    "risk_engine",
+    "report_generator",
+]
+
+IOS_QUICK_PIPELINE: list[str] = [
+    "ios_device",           # Device info
+    "jailbreak_detection",  # Jailbreak detection only (no plist/macho/cert pipeline)
     "risk_engine",
     "report_generator",
 ]

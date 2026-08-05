@@ -58,8 +58,10 @@ def main():
         a.setdefault("cert_issues", a.get("cert_issues") or [])
         a.setdefault("risk_factors", a.get("risk_factors") or [])
 
+    scan_mode = risk.get("scan_mode") or "minimal"
+
     evaluator = ChecklistEvaluator()
-    verdict, checklist = evaluator.evaluate(
+    verdict, checklist, severity_tier = evaluator.evaluate(
         device_info=device,
         root_data=root,
         jailbreak_data=None,
@@ -69,11 +71,12 @@ def main():
         apkid_data=apkid,
         app_risks=app_risks,
         platform="android",
+        scan_mode=scan_mode,
+        cve_data=cve,
     )
 
     overall_score = int(risk.get("overall_score") or 0)
     overall_level = risk.get("overall_level") or "LOW"
-    scan_mode = risk.get("scan_mode") or "minimal"
     scan_id = f"scan_{uuid.uuid4().hex[:12]}"
 
     # Appends a new scan row for the device — existing reports are preserved.
@@ -88,6 +91,8 @@ def main():
         app_risks=app_risks,
         cve_findings=cve,
         platform="android",
+        device_risk=risk.get("device_risk"),
+        severity_tier=severity_tier,
     )
 
     # Refresh risk_assessment.json with corrected device + checklist (best-effort)

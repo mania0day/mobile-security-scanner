@@ -28,10 +28,16 @@ class ServiceRunner:
         compose_file:  Path to the docker-compose file.
     """
 
-    def __init__(self, project_root: str, compose_file: str, env: dict | None = None):
+    def __init__(self, project_root: str, compose_file: str, env: dict | None = None, fast: bool = False):
         self.project_root = Path(project_root)
         self.compose_file = compose_file
         self.extra_env = dict(env or {})
+        # Quick mode skips the --build check on every invocation to shave the
+        # per-container startup overhead — it re-checking build context on
+        # every service is real time when nothing changed and the budget is
+        # ~5 seconds. Minimal/Deep keep --build since their time budget is
+        # minutes, not seconds, and it's safer to always pick up source changes.
+        self.fast = fast
 
     def run_service(self, service_name: str, timeout: int = 600) -> bool:
         """
@@ -44,11 +50,10 @@ class ServiceRunner:
         Returns:
             True if the service completed successfully (exit 0), False otherwise.
         """
-        command = [
-            "docker", "compose",
-            "-f", self.compose_file,
-            "run",
-            "--build",       # Rebuild from source if any service files changed (cached otherwise)
+        command = ["docker", "compose", "-f", self.compose_file, "run"]
+        if not self.fast:
+            command.append("--build")   # Rebuild from source if any service files changed (cached otherwise)
+        command += [
             "--rm",          # Remove container after it exits
             "--no-deps",     # Don't start linked services (orchestrator manages order)
         ]

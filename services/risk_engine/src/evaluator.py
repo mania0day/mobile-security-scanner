@@ -17,16 +17,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 
-HIGH_RISK_PERM_MARKERS = (
-    "BIND_ACCESSIBILITY_SERVICE",
-    "BIND_DEVICE_ADMIN",
-    "SYSTEM_ALERT_WINDOW",
-    "ACCESSIBILITY",
-    "DEVICE_ADMIN",
-    "SYSTEM_ALERT",
-)
-
-
 class ChecklistEvaluator:
     """Maps scanner findings to the 8-category BYOD admission checklist."""
 
@@ -41,17 +31,96 @@ class ChecklistEvaluator:
         apkid_data: Optional[Dict[str, Any]],
         app_risks: List[Any],
         platform: str = "android",
-    ) -> Tuple[str, List[Dict[str, Any]]]:
+        scan_mode: str = "minimal",
+        mvt_data: Optional[Dict[str, Any]] = None,
+        cve_data: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, List[Dict[str, Any]], str]:
         checklist: List[Dict[str, Any]] = []
         checklist.extend(self._identity(device_info, platform))
-        checklist.extend(self._integrity(root_data, jailbreak_data, platform))
+        checklist.extend(self._integrity(root_data, jailbreak_data, platform, scan_mode))
+        checklist.extend(self._cve_exposure(cve_data, scan_mode))
         checklist.extend(self._lock_encryption(device_info, platform))
-        checklist.extend(self._installed_apps(app_risks, yara_data, apkid_data))
+        checklist.extend(self._installed_apps(app_risks, yara_data, apkid_data, scan_mode))
         checklist.extend(self._network())
-        checklist.extend(self._certificates(app_risks, cert_data))
+        checklist.extend(self._certificates(app_risks, cert_data, scan_mode))
         checklist.extend(self._management(platform))
         checklist.extend(self._backup())
-        return self._verdict(checklist), checklist
+
+        verdict = self._verdict(checklist)
+        severity_tier = (
+            "Safe" if scan_mode == "quick"
+            else self._compute_severity_tier(checklist, root_data, jailbreak_data, cve_data, mvt_data, platform)
+        )
+        return verdict, checklist, severity_tier
+
+    # ------------------------------------------------------------------
+    # CVE Exposure (Must-priority — a confirmed CVE match hard-fails admission,
+    # same as confirmed root/jailbreak, per policy. Not evaluated in Quick mode
+    # since Quick's pipeline never runs cve_checker.)
+    # ------------------------------------------------------------------
+    def _cve_exposure(self, cve_data: Optional[Dict[str, Any]], scan_mode: str) -> List[Dict[str, Any]]:
+        if scan_mode == "quick" or not cve_data:
+            return []
+        total = cve_data.get("total_unpatched") or len(cve_data.get("cves") or [])
+        if total:
+            crit = cve_data.get("critical_count", 0)
+            high = cve_data.get("high_count", 0)
+            return [{
+                "category": "identity",
+                "check_name": "No known unpatched CVEs for current OS/patch level",
+                "priority": "Must",
+                "status": "FAIL",
+                "details": f"{total} unpatched CVE(s) affect this patch level "
+                           f"({crit} critical, {high} high) — device is Vulnerable.",
+            }]
+        return [{
+            "category": "identity",
+            "check_name": "No known unpatched CVEs for current OS/patch level",
+            "priority": "Must",
+            "status": "PASS",
+            "details": "No known unpatched CVEs matched for the current security patch level.",
+        }]
+
+    # ------------------------------------------------------------------
+    # Severity tier — a descriptive 5-tier label (Safe / Low Risk / Vulnerable /
+    # Compromisable / Critical) shown on the report alongside the PASS/FAIL
+    # verdict. This is additive: it does not change verdict/scoring logic,
+    # just gives a more human label for what kind of risk was found.
+    #
+    # A spyware/MVT suspicion alone maps to Compromisable, not Critical —
+    # IOC matching carries real false-positive risk, so it's flagged but does
+    # not by itself force a hard FAIL (see _verdict / _cve_exposure /
+    # _integrity for what actually blocks admission).
+    # ------------------------------------------------------------------
+    def _compute_severity_tier(
+        self,
+        checklist: List[Dict[str, Any]],
+        root_data: Optional[Dict[str, Any]],
+        jailbreak_data: Optional[Dict[str, Any]],
+        cve_data: Optional[Dict[str, Any]],
+        mvt_data: Optional[Dict[str, Any]],
+        platform: str,
+    ) -> str:
+        is_compromised = False
+        if platform == "android" and root_data:
+            is_compromised = bool(root_data.get("is_rooted"))
+        elif platform == "ios" and jailbreak_data:
+            is_compromised = bool(jailbreak_data.get("is_jailbroken"))
+
+        has_cve = bool(cve_data and (cve_data.get("total_unpatched") or cve_data.get("cves")))
+        mvt_hit = bool(mvt_data and (mvt_data.get("total_ioc_matches") or 0) > 0)
+
+        if is_compromised and has_cve:
+            return "Critical"
+        if mvt_hit:
+            return "Compromisable"
+        if has_cve:
+            return "Vulnerable"
+        if is_compromised:
+            return "Compromisable"
+        if any(i.get("status") == "WARNING" for i in checklist):
+            return "Low Risk"
+        return "Safe"
 
     # ------------------------------------------------------------------
     # 1. Device & OS Identity
@@ -152,6 +221,7 @@ class ChecklistEvaluator:
         root_data: Optional[Dict[str, Any]],
         jailbreak_data: Optional[Dict[str, Any]],
         platform: str,
+        scan_mode: str = "minimal",
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         is_compromised = False
@@ -280,7 +350,22 @@ class ChecklistEvaluator:
         app_risks: List[Any],
         yara_data: Optional[Dict[str, Any]],
         apkid_data: Optional[Dict[str, Any]],
+        scan_mode: str = "minimal",
     ) -> List[Dict[str, Any]]:
+        if scan_mode == "quick":
+            # Quick mode never runs apk_inventory/androguard/yara — an empty app
+            # list here reflects "not collected," not "PASS: nothing found," and
+            # a Must-priority FAIL would auto-reject every Quick scan. Downgrade
+            # to an honest, non-blocking WARNING instead.
+            return [{
+                "category": "installed_apps",
+                "check_name": "Full installed app / APK inventory pulled",
+                "priority": "Should",
+                "status": "WARNING",
+                "details": "App inventory not collected in Quick mode — applications were not audited. "
+                           "Run a Minimal or Deep scan for application-level analysis.",
+            }]
+
         items: List[Dict[str, Any]] = []
         apps_count = len(app_risks)
         items.append({
@@ -292,14 +377,43 @@ class ChecklistEvaluator:
             else "Application inventory empty — scan incomplete",
         })
 
+        # A single Accessibility/Admin/Overlay/SMS-capable permission is common
+        # in entirely legitimate apps (browsers and app stores need
+        # REQUEST_INSTALL_PACKAGES, chat/screen-recorder apps need
+        # SYSTEM_ALERT_WINDOW, screen readers need Accessibility, etc.). What
+        # is actually indicative of spyware/banking-trojan behavior is the
+        # SAME app combining 2+ of these distinct categories — e.g. an app
+        # with both Accessibility binding and Overlay, which lets it read the
+        # screen and draw fake UI on top of it. Require a genuine combination
+        # rather than any single hit, matching this check's own name.
+        #
+        # In practice "overlay + sms" alone is extremely common among stock
+        # OEM/AOSP components with zero relation to spyware: the default
+        # Dialer/MMS/Phone app needs SMS permissions to function as the
+        # default messaging handler, and SystemUI/Play services need Overlay
+        # for legitimate system UI. Verified against a real 436-app device:
+        # every "overlay + sms" or "admin + overlay" hit was a stock
+        # com.android.*/com.google.android.*/com.xiaomi.* system package,
+        # not a sideloaded app. The actual distinguishing signal used by real
+        # Android banking trojans (Anubis, Cerberus, etc.) is Accessibility
+        # abuse — screen-reading + auto-click — paired with something else,
+        # not any arbitrary pair of these four. So require Accessibility to
+        # be one of the two categories.
         high_risk_apps = []
         for a in app_risks:
-            perms = self._attr(a, "critical_permissions", []) or []
+            perms = (self._attr(a, "critical_permissions", []) or []) + \
+                    (self._attr(a, "high_permissions", []) or [])
             joined = " ".join(str(p) for p in perms).upper()
-            if any(m in joined for m in HIGH_RISK_PERM_MARKERS):
-                high_risk_apps.append(self._attr(a, "package_name", ""))
-            elif perms:
-                # Any critical-classified permission counts as elevated risk
+            categories = set()
+            if "ACCESSIBILITY" in joined:
+                categories.add("accessibility")
+            if "DEVICE_ADMIN" in joined:
+                categories.add("admin")
+            if "SYSTEM_ALERT" in joined or "OVERLAY" in joined:
+                categories.add("overlay")
+            if "SMS" in joined:
+                categories.add("sms")
+            if "accessibility" in categories and len(categories) >= 2:
                 high_risk_apps.append(self._attr(a, "package_name", ""))
 
         items.append({
@@ -308,8 +422,9 @@ class ChecklistEvaluator:
             "priority": "Must",
             "status": "FAIL" if high_risk_apps else "PASS",
             "details": (
-                f"{len(set(high_risk_apps))} app(s) request high-risk permissions commonly abused by spyware"
-                if high_risk_apps else "No high-risk Accessibility / Admin / Overlay permission abuse flagged"
+                f"{len(set(high_risk_apps))} app(s) combine Accessibility-service binding with "
+                "Admin/Overlay/SMS — a pattern common in spyware/banking trojans"
+                if high_risk_apps else "No app combines Accessibility-service binding with other high-risk permissions"
             ),
         })
 
@@ -393,7 +508,21 @@ class ChecklistEvaluator:
         self,
         app_risks: List[Any],
         cert_data: Optional[Dict[str, Any]],
+        scan_mode: str = "minimal",
     ) -> List[Dict[str, Any]]:
+        if scan_mode == "quick":
+            # Quick mode never runs the certificate service — reporting a clean
+            # "no untrusted CAs" PASS would be a false-clean claim in a security
+            # tool, since the check was never actually run. Say so explicitly.
+            return [{
+                "category": "certificates",
+                "check_name": "User-installed / untrusted root CA certificates present",
+                "priority": "Should",
+                "status": "WARNING",
+                "details": "Certificate inventory not evaluated in Quick mode — "
+                           "run Minimal or Deep scan to check for untrusted root CAs.",
+            }]
+
         # User-installed root CAs are the Must blocker. App signing weakness is secondary.
         user_ca = False
         if cert_data:

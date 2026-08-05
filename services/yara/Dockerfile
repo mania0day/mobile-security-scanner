@@ -8,4 +8,5 @@ ENV PYTHONPATH=/app
 WORKDIR /app/yara
 RUN pip install --no-cache-dir -r requirements.txt
 RUN chmod +x entrypoint.sh
+USER appuser
 ENTRYPOINT ["./entrypoint.sh"]

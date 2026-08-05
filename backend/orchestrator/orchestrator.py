@@ -14,6 +14,8 @@ Usage:
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -23,8 +25,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pipeline import (
     ANDROID_MINIMAL_PIPELINE,
     ANDROID_DEEP_PIPELINE,
+    ANDROID_QUICK_PIPELINE,
     IOS_MINIMAL_PIPELINE,
     IOS_DEEP_PIPELINE,
+    IOS_QUICK_PIPELINE,
 )
 from runner import ServiceRunner
 from config import PROJECT_ROOT, COMPOSE_FILE
@@ -50,9 +54,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["minimal", "deep"],
+        choices=["quick", "minimal", "deep"],
         default="minimal",
-        help="Scan mode: minimal (offline) or deep (requires API keys)",
+        help="Scan mode: quick (device/root/lock checks only, best-effort ~5s), "
+             "minimal (offline), or deep (requires API keys)",
     )
     parser.add_argument(
         "--skip",
@@ -66,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         metavar="SERIAL",
         help="Scan a specific connected device serial (skips auto-detection of first device)",
+    )
+    parser.add_argument(
+        "--vt",
+        action="store_true",
+        default=False,
+        help="Enable VirusTotal lookups (opt-in; only takes effect when --mode deep)",
     )
     return parser.parse_args()
 
@@ -110,23 +121,100 @@ def detect_platform(runner: ServiceRunner) -> tuple[str, list[str]]:
     return "none", []
 
 
+_STALE_OUTPUT_SERVICES = [
+    "adb", "apk_inventory", "apkid", "androguard", "certificate",
+    "permission_analyzer", "root_detection", "cve_checker", "hash_lookup",
+    "yara", "mobsf", "mvt", "ios_device", "plist_analyzer", "macho_analyzer",
+    "ios_certificate", "jailbreak_detection", "risk_engine",
+]
+
+
+def _cleanup_stale_outputs(project_root: str) -> None:
+    """Wipe every per-service results file left over from the previous run
+    before starting a new one.
+
+    Without this, a service that doesn't run in the current mode (e.g. Quick
+    never runs cve_checker) or that fails outright leaves its last results.json
+    in place, and risk_engine's _load_safe() reads it unconditionally — with
+    no per-run/per-device freshness check. That silently blends a *different*
+    phone's CVE/root/cert findings into the current report. Some of these
+    directories may be owned by root from containers that ran before non-root
+    hardening was added, so this shells out to a throwaway root container
+    rather than deleting via the (non-root) orchestrator process directly.
+
+    Also re-chowns/chmods each directory to appuser's uid (1000) after
+    clearing it — a root-owned leftover directory silently breaks every
+    future run of that one service with a PermissionError on write (this bit
+    cve_checker in practice: its directory predated the non-root hardening
+    and was never fixed, so cve_checker failed on every scan since).
+    """
+    output_dir = Path(project_root) / "backend" / "output"
+    per_service = " && ".join(
+        f"mkdir -p /output/{s} && rm -rf /output/{s}/* && chown -R 1000:1000 /output/{s} && chmod -R 777 /output/{s}"
+        for s in _STALE_OUTPUT_SERVICES
+    )
+    try:
+        subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{output_dir}:/output", "alpine",
+             "sh", "-c", per_service],
+            timeout=60, check=False,
+        )
+        logger.info("🧹 Cleared previous run's per-service output data")
+    except Exception as exc:
+        logger.warning(f"Could not clear previous outputs: {exc}")
+
+
+def _cleanup_run_artifacts(project_root: str) -> None:
+    """Delete large raw per-run artifacts (extracted APKs) that nothing downstream
+    still needs once report_generator has finished. Safe no-op if the directory
+    is empty/absent (e.g. after a Quick scan, which never populates it)."""
+    apks_dir = Path(project_root) / "backend" / "output" / "apks"
+    if apks_dir.exists():
+        try:
+            shutil.rmtree(apks_dir)
+            apks_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"🧹 Cleared extracted APKs from {apks_dir}")
+        except OSError as exc:
+            logger.warning(f"Could not clean {apks_dir}: {exc}")
+
+
 def get_pipeline_for_platform(platform: str, mode: str) -> list[str]:
     if platform == "ios":
-        return list(IOS_DEEP_PIPELINE if mode == "deep" else IOS_MINIMAL_PIPELINE)
-    else:
-        return list(ANDROID_DEEP_PIPELINE if mode == "deep" else ANDROID_MINIMAL_PIPELINE)
+        if mode == "deep":
+            return list(IOS_DEEP_PIPELINE)
+        if mode == "quick":
+            return list(IOS_QUICK_PIPELINE)
+        return list(IOS_MINIMAL_PIPELINE)
+    if mode == "deep":
+        return list(ANDROID_DEEP_PIPELINE)
+    if mode == "quick":
+        return list(ANDROID_QUICK_PIPELINE)
+    return list(ANDROID_MINIMAL_PIPELINE)
 
 
 def main() -> int:
     args = parse_args()
+
+    # Clear stale per-service outputs before anything else runs, so a service
+    # skipped by this mode or one that fails can't leave a previous (possibly
+    # different-device) result on disk for risk_engine/report_generator to
+    # silently pick up.
+    _cleanup_stale_outputs(PROJECT_ROOT)
+
+    # VT is opt-in (checkbox in the UI) and only ever takes effect on a deep scan.
+    vt_enabled = bool(args.vt and args.mode == "deep")
+    if args.vt and args.mode != "deep":
+        logger.warning("--vt was set but mode is not 'deep' — VirusTotal lookups stay disabled")
+
     runner = ServiceRunner(
         project_root=PROJECT_ROOT,
         compose_file=COMPOSE_FILE,
         env={
             "SCAN_MODE": args.mode,
-            "VT_ENABLED": "1" if args.mode == "deep" else "0",
+            "VT_ENABLED": "1" if vt_enabled else "0",
             "ADB_SERIAL": args.serial,
         },
+        fast=(args.mode == "quick"),
     )
 
     already_run = []
@@ -148,8 +236,7 @@ def main() -> int:
 
     pipeline = get_pipeline_for_platform(platform_name, args.mode)
 
-    # Gate VirusTotal lookups to deep scans only (free tier: ~4 req/min, 15s sleep each)
-    os.environ["VT_ENABLED"] = "1" if args.mode == "deep" else "0"
+    os.environ["VT_ENABLED"] = "1" if vt_enabled else "0"
     os.environ["SCAN_MODE"] = args.mode
 
     if args.skip:
@@ -253,6 +340,10 @@ def main() -> int:
             else:
                 logger.error(f"  ✗ {s} FAILED")
                 failed_services.append(s)
+
+    # Clean up large raw artifacts (extracted APKs) now that reporting is done —
+    # runs after every scan, including Quick (which is a safe no-op there).
+    _cleanup_run_artifacts(PROJECT_ROOT)
 
     elapsed = time.time() - start_time
 

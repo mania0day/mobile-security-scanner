@@ -12,4 +12,5 @@ WORKDIR /app/cve_checker
 
 RUN chmod +x entrypoint.sh
 
+USER appuser
 ENTRYPOINT ["./entrypoint.sh"]

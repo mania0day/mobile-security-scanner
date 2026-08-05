@@ -20,6 +20,17 @@ x-usb-volumes: &usb-volumes
   - /dev/bus/usb:/dev/bus/usb
   - ~/.android:/root/.android
 
+# Starting-point resource ceilings (not measured/tuned) so a single runaway
+# container (e.g. a malformed APK causing androguard to loop) can't take down
+# the host. Adjust based on observed usage.
+x-default-limits: &default-limits
+  mem_limit: 768m
+  cpus: 1.0
+
+x-heavy-limits: &heavy-limits
+  mem_limit: 2g
+  cpus: 2.0
+
 services:
 
   # ─────────────────────────────────────────
@@ -31,7 +42,8 @@ services:
       context: .
       dockerfile: services/adb/Dockerfile
     image: mobile-security-adb
-    privileged: true
+    <<: *default-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       OUTPUT_DIR: /app/backend/output/adb
@@ -43,7 +55,8 @@ services:
       context: .
       dockerfile: services/apk_inventory/Dockerfile
     image: mobile-security-apk-inventory
-    privileged: true
+    <<: *default-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       ADB_OUTPUT_DIR: /app/backend/output/adb
@@ -57,7 +70,8 @@ services:
       context: .
       dockerfile: services/apk_extractor/Dockerfile
     image: mobile-security-apk-extractor
-    privileged: true
+    <<: *heavy-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       ADB_OUTPUT_DIR: /app/backend/output/adb
@@ -77,6 +91,7 @@ services:
       context: .
       dockerfile: services/apkid/Dockerfile
     image: mobile-security-apkid
+    <<: *heavy-limits
     environment:
       <<: *common-env
       INVENTORY_OUTPUT_DIR: /app/backend/output/apk_inventory
@@ -89,6 +104,7 @@ services:
       context: .
       dockerfile: services/androguard/Dockerfile
     image: mobile-security-androguard
+    <<: *heavy-limits
     environment:
       <<: *common-env
       INVENTORY_OUTPUT_DIR: /app/backend/output/apk_inventory
@@ -101,6 +117,7 @@ services:
       context: .
       dockerfile: services/certificate/Dockerfile
     image: mobile-security-certificate
+    <<: *default-limits
     environment:
       <<: *common-env
       INVENTORY_OUTPUT_DIR: /app/backend/output/apk_inventory
@@ -112,6 +129,7 @@ services:
       context: .
       dockerfile: services/permission_analyzer/Dockerfile
     image: mobile-security-permission-analyzer
+    <<: *default-limits
     environment:
       <<: *common-env
       ANDROGUARD_OUTPUT_DIR: /app/backend/output/androguard
@@ -123,7 +141,8 @@ services:
       context: .
       dockerfile: services/root_detection/Dockerfile
     image: mobile-security-root-detection
-    privileged: true
+    <<: *default-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       ADB_OUTPUT_DIR: /app/backend/output/adb
@@ -136,6 +155,7 @@ services:
       context: .
       dockerfile: services/hash_lookup/Dockerfile
     image: mobile-security-hash-lookup
+    <<: *default-limits
     environment:
       <<: *common-env
       INVENTORY_OUTPUT_DIR: /app/backend/output/apk_inventory
@@ -152,6 +172,7 @@ services:
       context: .
       dockerfile: services/yara/Dockerfile
     image: mobile-security-yara
+    <<: *heavy-limits
     environment:
       <<: *common-env
       INVENTORY_OUTPUT_DIR: /app/backend/output/apk_inventory
@@ -168,7 +189,8 @@ services:
       context: .
       dockerfile: services/ios_device/Dockerfile
     image: mobile-security-ios-device
-    privileged: true
+    <<: *default-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       OUTPUT_DIR: /app/backend/output/ios_device
@@ -180,6 +202,7 @@ services:
       context: .
       dockerfile: services/plist_analyzer/Dockerfile
     image: mobile-security-plist-analyzer
+    <<: *default-limits
     environment:
       <<: *common-env
       OUTPUT_DIR: /app/backend/output/plist_analyzer
@@ -190,6 +213,7 @@ services:
       context: .
       dockerfile: services/macho_analyzer/Dockerfile
     image: mobile-security-macho-analyzer
+    <<: *default-limits
     environment:
       <<: *common-env
       OUTPUT_DIR: /app/backend/output/macho_analyzer
@@ -200,6 +224,7 @@ services:
       context: .
       dockerfile: services/ios_certificate/Dockerfile
     image: mobile-security-ios-certificate
+    <<: *default-limits
     environment:
       <<: *common-env
       OUTPUT_DIR: /app/backend/output/ios_certificate
@@ -210,7 +235,8 @@ services:
       context: .
       dockerfile: services/jailbreak_detection/Dockerfile
     image: mobile-security-jailbreak-detection
-    privileged: true
+    <<: *default-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       OUTPUT_DIR: /app/backend/output/jailbreak_detection
@@ -223,6 +249,7 @@ services:
 
   mobsf-server:
     image: opensecurity/mobile-security-framework-mobsf:latest
+    <<: *heavy-limits
     ports:
       - "8000:8000"
     environment:
@@ -242,6 +269,7 @@ services:
       context: .
       dockerfile: services/mobsf/Dockerfile
     image: mobile-security-mobsf-client
+    <<: *heavy-limits
     environment:
       <<: *common-env
       INVENTORY_OUTPUT_DIR: /app/backend/output/apk_inventory
@@ -259,7 +287,8 @@ services:
       context: .
       dockerfile: services/mvt/Dockerfile
     image: mobile-security-mvt
-    privileged: true
+    <<: *heavy-limits
+    privileged: true  # requires root for /dev/bus/usb (USB) access
     environment:
       <<: *common-env
       ADB_OUTPUT_DIR: /app/backend/output/adb
@@ -279,6 +308,7 @@ services:
       context: .
       dockerfile: services/cve_checker/Dockerfile
     image: mobile-security-cve-checker
+    <<: *default-limits
     environment:
       <<: *common-env
       ADB_OUTPUT: /app/backend/output/adb
@@ -294,6 +324,7 @@ services:
       context: .
       dockerfile: services/risk_engine/Dockerfile
     image: mobile-security-risk-engine
+    <<: *default-limits
     environment:
       <<: *common-env
       OUTPUT_BASE: /app/backend/output
@@ -305,6 +336,7 @@ services:
       context: .
       dockerfile: services/report_generator/Dockerfile
     image: mobile-security-report-generator
+    <<: *default-limits
     environment:
       <<: *common-env
       OUTPUT_BASE: /app/backend/output

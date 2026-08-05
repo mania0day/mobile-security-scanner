@@ -49,6 +49,13 @@
            disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none;
   }
 
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-brand/30 bg-white px-4 py-2.5
+           text-sm font-semibold text-brand-dark shadow-soft transition-all duration-150
+           hover:bg-brand-soft hover:border-brand/50 active:scale-[0.98]
+           disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none;
+  }
+
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-white px-4 py-2.5
            text-sm font-medium text-ink transition-all duration-150

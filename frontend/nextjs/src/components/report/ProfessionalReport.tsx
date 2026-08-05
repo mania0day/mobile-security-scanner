@@ -662,6 +662,17 @@ function buildTags(scan: ScanDetails, mustFails: number, warn: number, fail: num
     { label: scan.platform, bg: '#EFF6FF', fg: '#1D4ED8' },
     { label: `${scan.scan_mode} scan`, bg: '#F8FAFC', fg: '#475569' },
   ];
+  if (scan.scan_mode !== 'quick' && scan.severity_tier) {
+    const sevColors: Record<string, [string, string]> = {
+      safe: ['#DCFCE7', '#16A34A'],
+      'low risk': ['#FEF9C3', '#CA8A04'],
+      vulnerable: ['#FEF3C7', '#D97706'],
+      compromisable: ['#FFEDD5', '#C2410C'],
+      critical: ['#FEE2E2', '#DC2626'],
+    };
+    const [bg, fg] = sevColors[scan.severity_tier.toLowerCase()] || ['#F8FAFC', '#475569'];
+    tags.push({ label: scan.severity_tier, bg, fg });
+  }
   if (mustFails) tags.push({ label: `${mustFails} must fail`, bg: '#FEE2E2', fg: '#DC2626' });
   if (warn)     tags.push({ label: `${warn} warnings`,   bg: '#FEF3C7', fg: '#D97706' });
   if (scan.critical_apps_count) tags.push({ label: `${scan.critical_apps_count} critical apps`, bg: '#FFF7ED', fg: '#C2410C' });

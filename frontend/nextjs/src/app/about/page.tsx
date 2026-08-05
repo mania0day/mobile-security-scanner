@@ -24,7 +24,7 @@ const categories = [
   {
     icon: Shield,
     label: '2. Root / Jailbreak & Integrity',
-    checks: ['Root (Android) or jailbreak (iOS) detection', 'Bootloader lock status', 'USB debugging / ADB status', 'Custom ROM / test-keys detection'],
+    checks: ['Root (Android: su execution + Magisk artifacts) or jailbreak (iOS: installed-app bundle ID scan) detection', 'Bootloader lock status & OEM unlock allowed', 'USB debugging / ADB status', 'Custom ROM / test-keys detection'],
   },
   {
     icon: Lock,
@@ -65,6 +65,21 @@ const platforms = [
     icon: Smartphone,
     desc: 'Connected via USB debugging (ADB). APKs are pulled off-device for static analysis.',
     modes: [
+      {
+        name: 'Quick',
+        color: 'text-teal-600',
+        bg: 'bg-teal-50',
+        time: 'seconds (best effort)',
+        api_keys: 'None required',
+        pipeline: [
+          'Device detection (model, Android version, patch level)',
+          'IMEI / SIM / phone number collection',
+          'Root detection (su execution confirm, Magisk artifacts, overlay mounts)',
+          'Bootloader unlock status',
+          'Screen lock & encryption status',
+          'Risk scoring & report (no app/certificate inventory in this tier)',
+        ],
+      },
       {
         name: 'Minimal',
         color: 'text-brand',
@@ -107,6 +122,18 @@ const platforms = [
     desc: 'Connected over USB (usbmux). Scans the device, its configuration profiles and Mach-O binaries.',
     modes: [
       {
+        name: 'Quick',
+        color: 'text-teal-600',
+        bg: 'bg-teal-50',
+        time: 'seconds (best effort)',
+        api_keys: 'None required',
+        pipeline: [
+          'Device detection (iPhone / iPad via usbmux)',
+          'Jailbreak detection (installed-app bundle ID scan)',
+          'Risk scoring & report (no plist / Mach-O / certificate inventory in this tier)',
+        ],
+      },
+      {
         name: 'Minimal',
         color: 'text-brand',
         bg: 'bg-brand-soft',
@@ -117,7 +144,7 @@ const platforms = [
           'plist_analyzer — Info.plist, permissions & entitlements',
           'macho_analyzer — binary mitigations (PIE, ARC, Canaries)',
           'iOS certificate & provisioning profile analysis',
-          'Jailbreak & tampering detection',
+          'Jailbreak detection (installed-app bundle ID scan for Cydia/Sileo/Zebra/etc)',
           'Risk scoring & report',
         ],
       },

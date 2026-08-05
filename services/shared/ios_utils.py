@@ -16,19 +16,24 @@ def get_ios_device_info() -> Tuple[bool, Dict[str, Any], str]:
     Returns (success, device_dict, error_message).
     """
     try:
-        # Try pymobiledevice3 first
-        proc = run_command(["pymobiledevice3", "usbmux", "list"], timeout=10)
+        # Try pymobiledevice3's lockdown info first — `usbmux list` only returns
+        # connection identifiers (udid/connection type), never product_version/
+        # build_version/device_name, so those fields always stayed empty when
+        # this path was taken. `lockdown info` reads the full lockdown record.
+        proc = run_command(["pymobiledevice3", "lockdown", "info", "--json"], timeout=10)
         if proc.returncode == 0 and proc.stdout.strip():
             try:
                 data = json.loads(proc.stdout)
-                if data and isinstance(data, list) and len(data) > 0:
-                    dev = data[0]
-                    udid = dev.get("Identifier", dev.get("udid", ""))
+                if isinstance(data, dict) and (data.get("UniqueDeviceID") or data.get("udid")):
+                    udid = data.get("UniqueDeviceID", data.get("udid", ""))
                     return True, {
                         "udid": udid,
-                        "connection_type": dev.get("ConnectionType", "USB"),
-                        "device_type": dev.get("DeviceClass", "iPhone"),
-                        "raw": dev
+                        "device_name": data.get("DeviceName", ""),
+                        "device_class": data.get("DeviceClass", "iPhone"),
+                        "product_type": data.get("ProductType", ""),
+                        "product_version": data.get("ProductVersion", ""),
+                        "build_version": data.get("BuildVersion", ""),
+                        "raw": data,
                     }, ""
             except Exception:
                 pass
@@ -58,3 +63,30 @@ def get_ios_device_info() -> Tuple[bool, Dict[str, Any], str]:
     except Exception as e:
         logger.error(f"Error detecting iOS device: {e}")
         return False, {}, str(e)
+
+
+def get_installed_app_bundle_ids() -> list[str]:
+    """
+    List installed application bundle IDs via pymobiledevice3's installation
+    proxy — this works over a standard (non-jailbroken) USB pairing, unlike
+    filesystem/SSH-based jailbreak checks which require the device to already
+    be jailbroken to reach. Used to spot known jailbreak-tool apps (Cydia,
+    Sileo, Zebra, ...) that install as ordinary user-visible apps.
+    """
+    try:
+        proc = run_command(["pymobiledevice3", "apps", "list", "--user", "--system", "--json"], timeout=20)
+        if proc.returncode == 0 and proc.stdout.strip():
+            try:
+                data = json.loads(proc.stdout)
+                if isinstance(data, dict):
+                    return list(data.keys())
+                if isinstance(data, list):
+                    return [
+                        (a.get("CFBundleIdentifier") or a.get("bundle_id") or "")
+                        for a in data if isinstance(a, dict)
+                    ]
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Could not list installed apps for jailbreak bundle-ID check: {e}")
+    return []

@@ -32,3 +32,19 @@ WRITE_TEST_PATHS = [
 ]
 
 OPEN_PORTS = [22, 4444]
+
+# Known jailbreak-tool bundle IDs — these apps are visible via the standard
+# installation proxy (no jailbreak needed to enumerate installed apps), so
+# this is the one reachable-over-USB signal that actually works.
+JAILBREAK_BUNDLE_IDS = [
+    "com.saurik.Cydia",
+    "org.coolstar.sileo",
+    "xyz.willy.Zebra",
+    "com.opa334.Dopamine",
+    "org.crd.filza",
+    "com.linusyang.PPApp",
+    "com.ex.substitute",
+    "science.cydia.installer",
+    "org.thebigboss.iCleaner",
+    "com.tigisoftware.filza",
+]

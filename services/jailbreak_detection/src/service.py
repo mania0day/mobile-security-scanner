@@ -32,17 +32,33 @@ class JailbreakDetector:
         self.device_data = device_data
 
     def detect(self) -> JailbreakResult:
-        # Check against paths configured in config
+        # NOTE: the filesystem/binary/dylib/port checks below (JAILBREAK_PATHS,
+        # BIN_PATHS, DYLIBS, WRITE_TEST_PATHS, OPEN_PORTS) have no data source —
+        # ios_device (the only upstream producer of device_data) never collects
+        # 'paths'/'dylibs'/'writable_paths'/'open_ports' keys, since reading them
+        # requires filesystem/SSH access that only a jailbroken device exposes
+        # in the first place. They're kept here for schema/config compatibility
+        # but will always evaluate to empty lists — this was previously the
+        # ENTIRE detection logic, meaning is_jailbroken was unconditionally
+        # False regardless of actual device state.
         found_paths = [p for p in config.JAILBREAK_PATHS if p in self.device_data.get('paths', [])]
         found_bins = [b for b in config.BIN_PATHS if b in self.device_data.get('paths', [])]
         found_dylibs = [d for d in config.DYLIBS if d in self.device_data.get('dylibs', [])]
         found_writable = [w for w in config.WRITE_TEST_PATHS if w in self.device_data.get('writable_paths', [])]
         found_ports = [p for p in config.OPEN_PORTS if p in self.device_data.get('open_ports', [])]
 
-        is_jb = any([found_paths, found_bins, found_dylibs, found_writable, found_ports])
+        # Real signal: known jailbreak-tool apps (Cydia/Sileo/Zebra/...) are
+        # visible via the standard installation proxy without any jailbreak
+        # required to enumerate them — this is what ios_device actually collects.
+        installed_bundle_ids = self.device_data.get('installed_app_bundle_ids', []) or []
+        found_bundle_ids = [b for b in config.JAILBREAK_BUNDLE_IDS if b in installed_bundle_ids]
 
-        dev_info = self.device_data.get('device_info', {})
-        product_version = dev_info.get('ProductVersion', '')
+        is_jb = any([found_paths, found_bins, found_dylibs, found_writable, found_ports, found_bundle_ids])
+
+        # ios_device writes product_version as a top-level field in device.json —
+        # there is no nested 'device_info' key, so reading device_info.ProductVersion
+        # always returned '' regardless of the actual iOS version.
+        product_version = self.device_data.get('product_version', '')
         cve_vulns = check_ios_vulnerabilities(product_version)
 
         return JailbreakResult(
@@ -52,7 +68,8 @@ class JailbreakDetector:
             dylibs_found=found_dylibs,
             writable_paths_found=found_writable,
             open_ports_found=found_ports,
-            device_info=dev_info,
+            jailbreak_bundle_ids_found=found_bundle_ids,
+            device_info=self.device_data,
             cve_vulnerabilities=cve_vulns
         )
 

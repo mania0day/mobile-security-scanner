@@ -12,4 +12,5 @@ WORKDIR /app/permission_analyzer
 
 RUN chmod +x entrypoint.sh
 
+USER appuser
 ENTRYPOINT ["./entrypoint.sh"]

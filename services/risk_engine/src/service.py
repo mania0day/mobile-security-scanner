@@ -107,14 +107,28 @@ class RiskEngineService:
         # Score the device
         device_risk = self._score_device(serial, root)
 
-        worst_app_score = max((a.risk_score for a in app_risks), default=0)
-        overall_score = max(device_risk.risk_score, worst_app_score)
+        # overall_score represents the WHOLE DEVICE's risk, not one outlier
+        # app. Weights above are documented as "out of 100, then averaged
+        # across all apps" but this used to take max() of every app's score
+        # instead — so on a real phone with 400+ apps, a single app's raw
+        # additive permission/YARA score (easy to rack up legitimately: e.g.
+        # Google Play Services needs a dozen permissions to broker services
+        # for other apps) silently overrode every other app and pinned the
+        # entire device to 100/CRITICAL. Use the population average, matching
+        # the documented intent — individually concerning apps are still
+        # called out by name in the checklist below (high_risk_apps /
+        # malware_pkgs), they just no longer dominate the device-wide gauge.
+        avg_app_score = round(sum(a.risk_score for a in app_risks) / len(app_risks)) if app_risks else 0
+        overall_score = max(device_risk.risk_score, avg_app_score)
 
         critical_apps = sum(1 for a in app_risks if a.risk_level == "CRITICAL")
         high_apps = sum(1 for a in app_risks if a.risk_level == "HIGH")
 
+        scan_mode_override = (os.environ.get("SCAN_MODE") or "").strip().lower()
+        scan_mode = self._determine_scan_mode(mobsf, mvt, scan_mode_override)
+
         # Checklist Evaluation (Mobile_Device_Security_Scan_Checklist.docx)
-        verdict, checklist = self.evaluator.evaluate(
+        verdict, checklist, severity_tier = self.evaluator.evaluate(
             device_info=dev_info,
             root_data=root,
             jailbreak_data=jailbreak,
@@ -123,11 +137,11 @@ class RiskEngineService:
             yara_data=yara,
             apkid_data=apkid,
             app_risks=app_risks,
-            platform=platform
+            platform=platform,
+            scan_mode=scan_mode,
+            mvt_data=mvt,
+            cve_data=cve,
         )
-
-        scan_mode_override = (os.environ.get("SCAN_MODE") or "").strip().lower()
-        scan_mode = self._determine_scan_mode(mobsf, mvt, scan_mode_override)
 
         assessment = RiskAssessment(
             scan_timestamp=datetime.now(timezone.utc).isoformat(),
@@ -145,10 +159,21 @@ class RiskEngineService:
         )
 
         # Save JSON output
-        self._save(assessment, verdict, checklist)
+        self._save(assessment, verdict, checklist, severity_tier)
 
         # Save to SQLite Database
         scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+        device_risk_dict = {
+            "serial": device_risk.serial,
+            "risk_score": device_risk.risk_score,
+            "risk_level": device_risk.risk_level,
+            "risk_factors": device_risk.risk_factors,
+            "is_rooted": device_risk.is_rooted,
+            "selinux_status": device_risk.selinux_status,
+            "is_debuggable": device_risk.is_debuggable,
+            "bootloader_unlocked": device_risk.bootloader_unlocked,
+            "oem_unlock_allowed": device_risk.oem_unlock_allowed,
+        }
         if save_scan_results:
             try:
                 save_scan_results(
@@ -161,7 +186,9 @@ class RiskEngineService:
                     checklist=checklist,
                     app_risks=[a.__dict__ for a in app_risks],
                     cve_findings=cve,
-                    platform=platform
+                    platform=platform,
+                    device_risk=device_risk_dict,
+                    severity_tier=severity_tier,
                 )
                 self.logger.info(f"Persisted scan {scan_id} to SQLite database")
             except Exception as e:
@@ -179,30 +206,43 @@ class RiskEngineService:
 
         score = 0
         factors = []
+        checks = root.get("checks", {})
 
-        if root.get("checks", {}).get("su_binary_found"):
+        # Collect every root signal that fired for display/transparency, but only
+        # add the "rooted" weight ONCE — previously each of these three checks
+        # independently added the full weight, letting a single rooted device
+        # stack up to 75 points from "rootedness" alone.
+        root_signals = []
+        if checks.get("su_binary_found"):
+            root_signals.append("Root binary (su) detected")
+        if checks.get("su_execution_confirmed"):
+            root_signals.append(f"Root access confirmed via su execution (uid=0): {checks.get('su_execution_output', '')}")
+        if checks.get("magisk_detected"):
+            root_signals.append("Magisk root framework detected")
+        if checks.get("root_manager_detected"):
+            root_signals.append("Root manager application installed")
+        magisk_ind = checks.get("magisk_indicators") or {}
+        fired_ind = [k for k, v in magisk_ind.items() if v]
+        if fired_ind:
+            root_signals.append(f"Modern Magisk artifacts detected ({', '.join(fired_ind)})")
+        if checks.get("overlay_mounts_found"):
+            root_signals.append("OverlayFS mount detected (systemless root indicator)")
+
+        if root_signals:
             score += DEVICE_WEIGHTS["rooted"]
-            factors.append("Root binary (su) detected")
+            factors.extend(root_signals)
             dr.is_rooted = True
 
-        if root.get("checks", {}).get("magisk_detected"):
-            score += DEVICE_WEIGHTS["rooted"]
-            factors.append("Magisk root framework detected")
-            dr.is_rooted = True
-
-        if root.get("checks", {}).get("root_manager_detected"):
-            score += DEVICE_WEIGHTS["rooted"]
-            factors.append("Root manager application installed")
-            dr.is_rooted = True
-
-        if root.get("checks", {}).get("ro_secure") == "0":
+        if checks.get("ro_secure") == "0":
             score += DEVICE_WEIGHTS["ro_secure"]
             factors.append("ro.secure=0 — unrestricted ADB root shell")
 
-        if root.get("checks", {}).get("bootloader_unlocked"):
+        if checks.get("bootloader_unlocked"):
             score += DEVICE_WEIGHTS["bootloader_unlocked"]
             factors.append("Bootloader is unlocked / verified boot not enforcing")
             dr.bootloader_unlocked = True
+
+        dr.oem_unlock_allowed = checks.get("oem_unlock_allowed")
 
         selinux = root.get("checks", {}).get("selinux_status", "")
         dr.selinux_status = selinux
@@ -318,7 +358,7 @@ class RiskEngineService:
 
     @staticmethod
     def _determine_scan_mode(mobsf: dict | None, mvt: dict | None, scan_mode_override: str | None = None) -> str:
-        if scan_mode_override in {"deep", "minimal"}:
+        if scan_mode_override in {"deep", "minimal", "quick"}:
             return scan_mode_override
         if (mobsf and not mobsf.get("skipped")) or (mvt and not mvt.get("skipped")):
             return "deep"
@@ -334,12 +374,13 @@ class RiskEngineService:
         names = ["root_detection", "apkid", "androguard", "certificate", "permission_analyzer", "hash_lookup", "yara", "mobsf", "mvt"]
         return [name for name, r in zip(names, results) if not r or r.get("skipped")]
 
-    def _save(self, assessment: RiskAssessment, verdict: str, checklist: List[Dict[str, Any]]) -> None:
+    def _save(self, assessment: RiskAssessment, verdict: str, checklist: List[Dict[str, Any]], severity_tier: str = "Safe") -> None:
         payload = {
             "scan_timestamp": assessment.scan_timestamp,
             "device_serial": assessment.device_serial,
             "scan_mode": assessment.scan_mode,
             "verdict": verdict,
+            "severity_tier": severity_tier,
             "overall_score": assessment.overall_score,
             "overall_level": assessment.overall_level,
             "checklist_evaluations": checklist,
@@ -355,6 +396,7 @@ class RiskEngineService:
                 "selinux_status": assessment.device_risk.selinux_status,
                 "is_debuggable": assessment.device_risk.is_debuggable,
                 "bootloader_unlocked": assessment.device_risk.bootloader_unlocked,
+                "oem_unlock_allowed": assessment.device_risk.oem_unlock_allowed,
             },
             "summary": {
                 "total_apps_analyzed": assessment.total_apps_analyzed,

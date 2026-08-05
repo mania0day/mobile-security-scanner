@@ -1,5 +1,5 @@
 .env
-
+*.docx
 # Local/generated scan artifacts
 backend/output/
 backend/logs/

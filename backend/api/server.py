@@ -42,14 +42,21 @@ def _load_cve_output():
 
 def _pdf_basename(scan: dict) -> str:
     mode = (scan.get("scan_mode") or "minimal").lower().replace(" ", "_")
-    if mode not in ("minimal", "deep"):
+    if mode not in ("minimal", "deep", "quick"):
         mode = "minimal"
     scan_id = scan.get("id") or "scan"
     serial = (scan.get("serial") or "device").replace("/", "_")[:24]
     return f"admission_{mode}_{serial}_{scan_id}"
 
 
-SENSITIVE_FIELDS = {"imei", "imei_slot2", "meid", "phone_number", "subscriber_id", "sim_serial", "wifi_mac", "bluetooth_mac"}
+SENSITIVE_FIELDS = {
+    "serial",
+    "imei", "imei_slot2", "meid",
+    "phone_number", "phone_number_slot2",
+    "subscriber_id", "subscriber_id_slot2",
+    "sim_serial", "sim_serial_slot2",
+    "wifi_mac", "bluetooth_mac",
+}
 
 def _strip_sensitive(data: dict) -> dict:
     """Return a copy of device data with IMEI/phone/SIM fields redacted."""
@@ -63,7 +70,7 @@ def _strip_sensitive(data: dict) -> dict:
 def _ensure_scan_pdf(scan: dict, safe: bool = False, one_pager: bool = False) -> Path | None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     mode = (scan.get("scan_mode") or "minimal").lower()
-    if mode not in ("minimal", "deep"):
+    if mode not in ("minimal", "deep", "quick"):
         mode = "minimal"
     scan_id = scan["id"]
     base = _pdf_basename(scan)
@@ -103,6 +110,8 @@ def _ensure_scan_pdf(scan: dict, safe: bool = False, one_pager: bool = False) ->
         "screen_lock_enabled": scan.get("screen_lock_enabled"),
         "encryption_enabled": scan.get("encryption_enabled"),
         "bootloader_unlocked": scan.get("bootloader_unlocked"),
+        "screen_lock_evidence": scan.get("screen_lock_evidence"),
+        "oem_unlock_allowed": scan.get("oem_unlock_allowed"),
     }
 
     if safe:
@@ -117,6 +126,7 @@ def _ensure_scan_pdf(scan: dict, safe: bool = False, one_pager: bool = False) ->
         "device": device,
         "scan_mode": mode,
         "verdict": scan.get("verdict", "PASS"),
+        "severity_tier": scan.get("severity_tier") or "Safe",
         "overall_score": scan.get("overall_score", 0),
         "overall_level": scan.get("device_risk_level", "LOW"),
         "device_risk_level": scan.get("device_risk_level", "LOW"),
@@ -132,6 +142,7 @@ def _ensure_scan_pdf(scan: dict, safe: bool = False, one_pager: bool = False) ->
         or {
             "is_rooted": scan.get("is_rooted", False),
             "bootloader_unlocked": scan.get("bootloader_unlocked", False),
+            "oem_unlock_allowed": scan.get("oem_unlock_allowed"),
             "selinux_status": "Unknown",
         },
         "app_risks": [
@@ -310,16 +321,19 @@ class APIHandler(BaseHTTPRequestHandler):
                 body = {}
 
             mode = body.get("mode", "minimal")
-            if mode not in ("minimal", "deep"):
+            if mode not in ("minimal", "deep", "quick"):
                 mode = "minimal"
             platform = body.get("platform", "auto")
             serial = str(body.get("serial") or "").strip()
+            vt_enabled = bool(body.get("vt_enabled")) and mode == "deep"
             cmd = [
                 sys.executable,
                 str(PROJECT_ROOT / "backend" / "orchestrator" / "orchestrator.py"),
                 "--mode", mode,
                 "--platform", platform,
             ]
+            if vt_enabled:
+                cmd.append("--vt")
             if serial:
                 cmd.extend(["--serial", serial])
             result = start_scan(cmd, mode=mode, platform=platform, cwd=str(PROJECT_ROOT))

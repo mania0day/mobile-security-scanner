@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   Clock,
   Shield,
+  Gauge,
 } from 'lucide-react';
 import {
   ConnectedDevice,
@@ -49,7 +50,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [mode, setMode] = useState<'minimal' | 'deep'>('minimal');
+  const [mode, setMode] = useState<'quick' | 'minimal' | 'deep'>('minimal');
+  const [vtEnabled, setVtEnabled] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [jobInfo, setJobInfo] = useState<{ pid?: number } | null>(null);
@@ -68,13 +70,30 @@ export default function DashboardPage() {
     const [scanData, live] = await Promise.all([fetchAllScans(), fetchConnectedDevices()]);
     setScans(scanData);
     setConnected(live);
-    if (!selected && live.length) {
-      const ready = live.find((d) => d.ready) || live[0];
-      setSelected(ready.serial);
-    }
     setLoading(false);
     setRefreshing(false);
-  }, [selected]);
+  }, []);
+
+  // Auto-select a device only once, the first time the list goes from empty to non-empty.
+  // Guarded by a ref (not just `!selected`) so the 8s poll below can never silently
+  // re-trigger this and clobber a manual selection made after the initial auto-pick.
+  const hasAutoSelected = useRef(false);
+  useEffect(() => {
+    if (hasAutoSelected.current) return;
+    if (selected || connected.length === 0) return;
+    const ready = connected.find((d) => d.ready) || connected[0];
+    setSelected(ready.serial);
+    hasAutoSelected.current = true;
+  }, [connected, selected]);
+
+  // If the currently-selected device disconnects, clear the selection so the
+  // effect above can auto-select one of the remaining devices.
+  useEffect(() => {
+    if (selected && connected.length > 0 && !connected.some((d) => d.serial === selected)) {
+      setSelected(null);
+      hasAutoSelected.current = false;
+    }
+  }, [connected, selected]);
 
   useEffect(() => {
     fetchScanStatus().then((s) => {
@@ -82,7 +101,7 @@ export default function DashboardPage() {
         setScanning(true);
         setMessage(s.message || 'Scan in progress…');
         setJobInfo({ pid: s.pid });
-        if (s.mode === 'minimal' || s.mode === 'deep') setMode(s.mode);
+        if (s.mode === 'quick' || s.mode === 'minimal' || s.mode === 'deep') setMode(s.mode as 'quick' | 'minimal' | 'deep');
         if (s.started_at) setElapsedSec(Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000));
       }
     });
@@ -106,7 +125,7 @@ export default function DashboardPage() {
       const s = await fetchScanStatus();
       setJobInfo({ pid: s.pid });
       setMessage(s.message || 'Scan in progress…');
-      if (s.mode === 'minimal' || s.mode === 'deep') setMode(s.mode);
+      if (s.mode === 'quick' || s.mode === 'minimal' || s.mode === 'deep') setMode(s.mode as 'quick' | 'minimal' | 'deep');
       if (s.started_at) setElapsedSec(Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000));
       if (!s.running) {
         setScanning(false);
@@ -131,7 +150,7 @@ export default function DashboardPage() {
     setMessage(null);
     setJobInfo(null);
     const platform = active?.platform === 'ios' ? 'ios' : active?.platform === 'android' ? 'android' : 'auto';
-    const res = await triggerLiveScan(mode, platform, active?.serial);
+    const res = await triggerLiveScan(mode, platform, active?.serial, vtEnabled);
     if (res.error) { setMessage(res.error); setScanning(false); return; }
     setMessage(`Scan started (PID ${res.pid})`);
     setJobInfo({ pid: res.pid });
@@ -339,7 +358,7 @@ export default function DashboardPage() {
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">Scan mode</p>
               <div className="flex gap-2">
-                {(['minimal', 'deep'] as const).map((m) => (
+                {(['quick', 'minimal', 'deep'] as const).map((m) => (
                   <button
                     key={m}
                     type="button"
@@ -351,13 +370,33 @@ export default function DashboardPage() {
                         : 'bg-white text-muted border border-line hover:border-brand/30 hover:text-ink'
                     } ${scanning ? 'cursor-not-allowed opacity-40' : ''}`}
                   >
-                    {m === 'minimal' ? <><Zap className="mr-1.5 inline-block h-3.5 w-3.5" />Minimal</> : <><Search className="mr-1.5 inline-block h-3.5 w-3.5" />Deep</>}
+                    {m === 'quick'
+                      ? <><Gauge className="mr-1.5 inline-block h-3.5 w-3.5" />Quick</>
+                      : m === 'minimal'
+                        ? <><Zap className="mr-1.5 inline-block h-3.5 w-3.5" />Minimal</>
+                        : <><Search className="mr-1.5 inline-block h-3.5 w-3.5" />Deep</>}
                   </button>
                 ))}
               </div>
               <p className="mt-1.5 text-xs text-muted">
-                {mode === 'minimal' ? 'Offline inventory & integrity checks (~5–15 min)' : 'Minimal + cloud analysis via MobSF (~20–40 min)'}
+                {mode === 'quick'
+                  ? 'Device info, root & lock-screen checks only — fastest triage (best-effort, ~seconds)'
+                  : mode === 'minimal'
+                    ? 'Offline inventory & integrity checks (~5–15 min)'
+                    : 'Minimal + cloud analysis via MobSF (~20–40 min)'}
               </p>
+              {mode === 'deep' && (
+                <label className="mt-2 flex items-center gap-2 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    checked={vtEnabled}
+                    onChange={(e) => setVtEnabled(e.target.checked)}
+                    disabled={scanning}
+                    className="rounded border-line text-brand focus:ring-brand/30"
+                  />
+                  Include VirusTotal lookup (requires API key/quota — opt-in)
+                </label>
+              )}
             </div>
 
             {/* Scan action */}
@@ -373,7 +412,7 @@ export default function DashboardPage() {
                       </span>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-warn">
-                          {mode === 'deep' ? 'Deep' : 'Minimal'} scan running · {formatElapsed(elapsedSec)}
+                          {mode === 'deep' ? 'Deep' : mode === 'quick' ? 'Quick' : 'Minimal'} scan running · {formatElapsed(elapsedSec)}
                         </p>
                         {message && <p className="mt-0.5 truncate text-xs text-warn/80">{message}</p>}
                       </div>

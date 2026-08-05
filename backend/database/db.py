@@ -38,12 +38,16 @@ _DEVICE_COLUMNS = {
     "subscriber_id_slot2": "TEXT",
     "screen_lock_enabled": "INTEGER",
     "encryption_enabled": "INTEGER",
+    "screen_lock_evidence": "TEXT",
+    "oem_unlock_allowed": "INTEGER",
 }
 _SCAN_COLUMNS = {
     "total_apps_scanned": "INTEGER DEFAULT 0",
     "critical_apps_count": "INTEGER DEFAULT 0",
     "high_apps_count": "INTEGER DEFAULT 0",
     "cve_findings_json": "TEXT",
+    "device_risk_json": "TEXT",
+    "severity_tier": "TEXT",
 }
 
 
@@ -156,7 +160,9 @@ def save_scan_results(
     checklist: List[Dict[str, Any]],
     app_risks: List[Dict[str, Any]],
     cve_findings: Optional[Dict[str, Any]] = None,
-    platform: str = "android"
+    platform: str = "android",
+    device_risk: Optional[Dict[str, Any]] = None,
+    severity_tier: Optional[str] = None,
 ):
     init_db()
     conn = get_db_connection()
@@ -191,6 +197,11 @@ def save_scan_results(
     subscriber_id_slot2 = device_info.get("subscriber_id_slot2") or ""
     screen_lock_enabled = 1 if device_info.get("screen_lock_enabled") else (0 if device_info.get("screen_lock_enabled") is False else None)
     encryption_enabled = 1 if device_info.get("encryption_enabled") else (0 if device_info.get("encryption_enabled") is False else None)
+    screen_lock_evidence = json.dumps(device_info.get("screen_lock_evidence")) if device_info.get("screen_lock_evidence") else None
+    oem_unlock = device_info.get("oem_unlock_allowed")
+    if oem_unlock is None and device_risk is not None:
+        oem_unlock = device_risk.get("oem_unlock_allowed")
+    oem_unlock_allowed = 1 if oem_unlock is True else (0 if oem_unlock is False else None)
 
     # Upsert Device
     cursor.execute("SELECT id FROM devices WHERE serial = ?", (serial,))
@@ -209,6 +220,7 @@ def save_scan_results(
                 sim_serial = ?, sim_serial_slot2 = ?,
                 subscriber_id = ?, subscriber_id_slot2 = ?,
                 screen_lock_enabled = ?, encryption_enabled = ?,
+                screen_lock_evidence = ?, oem_unlock_allowed = ?,
                 last_scanned_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (platform, manufacturer, model, os_version, sdk_version, security_patch,
@@ -219,7 +231,8 @@ def save_scan_results(
               sim_operator, sim_operator_slot2, sim_operator_numeric,
               sim_serial, sim_serial_slot2,
               subscriber_id, subscriber_id_slot2,
-              screen_lock_enabled, encryption_enabled, device_id))
+              screen_lock_enabled, encryption_enabled,
+              screen_lock_evidence, oem_unlock_allowed, device_id))
     else:
         device_id = f"dev_{serial}"
         cursor.execute("""
@@ -232,13 +245,15 @@ def save_scan_results(
                  sim_operator, sim_operator_slot2, sim_operator_numeric,
                  sim_serial, sim_serial_slot2,
                  subscriber_id, subscriber_id_slot2,
-                 screen_lock_enabled, encryption_enabled)
+                 screen_lock_enabled, encryption_enabled,
+                 screen_lock_evidence, oem_unlock_allowed)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
                     ?, ?,
                     ?, ?, ?,
+                    ?, ?,
                     ?, ?,
                     ?, ?,
                     ?, ?)
@@ -250,17 +265,20 @@ def save_scan_results(
               sim_operator, sim_operator_slot2, sim_operator_numeric,
               sim_serial, sim_serial_slot2,
               subscriber_id, subscriber_id_slot2,
-              screen_lock_enabled, encryption_enabled))
+              screen_lock_enabled, encryption_enabled,
+              screen_lock_evidence, oem_unlock_allowed))
 
     # Save Scan Session
     critical_apps = sum(1 for a in app_risks if a.get("risk_level") == "CRITICAL")
     high_apps = sum(1 for a in app_risks if a.get("risk_level") == "HIGH")
 
     cursor.execute("""
-        INSERT INTO scan_sessions (id, device_id, scan_mode, verdict, overall_score, device_risk_level, total_apps_scanned, critical_apps_count, high_apps_count, cve_findings_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO scan_sessions (id, device_id, scan_mode, verdict, overall_score, device_risk_level, total_apps_scanned, critical_apps_count, high_apps_count, cve_findings_json, device_risk_json, severity_tier)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (scan_id, device_id, scan_mode, verdict, overall_score, device_risk_level, len(app_risks), critical_apps, high_apps,
-          json.dumps(cve_findings) if cve_findings else None))
+          json.dumps(cve_findings) if cve_findings else None,
+          json.dumps(device_risk) if device_risk else None,
+          severity_tier))
 
     # Save Checklist Evaluations
     for idx, item in enumerate(checklist):
@@ -323,7 +341,8 @@ def get_scan_details(scan_id: str):
                d.imei, d.imei_slot2, d.meid, d.phone_number, d.phone_number_slot2,
                d.sim_operator, d.sim_operator_slot2, d.sim_operator_numeric, d.sim_serial, d.sim_serial_slot2,
                d.subscriber_id, d.subscriber_id_slot2,
-               d.screen_lock_enabled, d.encryption_enabled
+               d.screen_lock_enabled, d.encryption_enabled,
+               d.screen_lock_evidence, d.oem_unlock_allowed
         FROM scan_sessions s
         JOIN devices d ON s.device_id = d.id
         WHERE s.id = ?
@@ -335,6 +354,10 @@ def get_scan_details(scan_id: str):
 
     scan_dict = dict(scan)
     scan_dict["cve_findings"] = json.loads(scan_dict["cve_findings_json"]) if scan_dict.get("cve_findings_json") else None
+    scan_dict["device_risk"] = json.loads(scan_dict["device_risk_json"]) if scan_dict.get("device_risk_json") else None
+    scan_dict["screen_lock_evidence"] = json.loads(scan_dict["screen_lock_evidence"]) if scan_dict.get("screen_lock_evidence") else None
+    scan_dict["is_rooted"] = bool(scan_dict["device_risk"].get("is_rooted")) if scan_dict.get("device_risk") else False
+    scan_dict["bootloader_unlocked"] = bool(scan_dict["device_risk"].get("bootloader_unlocked")) if scan_dict.get("device_risk") else False
 
     cursor.execute("SELECT * FROM checklist_evaluations WHERE scan_id = ?", (scan_id,))
     scan_dict["checklist"] = [dict(r) for r in cursor.fetchall()]
