@@ -41,9 +41,9 @@ class ChecklistEvaluator:
         checklist.extend(self._cve_exposure(cve_data, scan_mode))
         checklist.extend(self._lock_encryption(device_info, platform))
         checklist.extend(self._installed_apps(app_risks, yara_data, apkid_data, scan_mode))
-        checklist.extend(self._network())
+        checklist.extend(self._network(device_info))
         checklist.extend(self._certificates(app_risks, cert_data, scan_mode))
-        checklist.extend(self._management(platform))
+        checklist.extend(self._management(platform, device_info))
         checklist.extend(self._backup())
 
         verdict = self._verdict(checklist)
@@ -476,7 +476,12 @@ class ChecklistEvaluator:
     # ------------------------------------------------------------------
     # 5. Network & Connectivity Hygiene
     # ------------------------------------------------------------------
-    def _network(self) -> List[Dict[str, Any]]:
+    def _network(self, device_info: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        # Bluetooth *interface presence* is real, collected data (ro.bt.mac).
+        # Whether discoverability is actually toggled on isn't observable via
+        # ADB inventory without a live `settings get` probe this scan doesn't
+        # run — say so honestly rather than implying it was checked.
+        bt_mac = (device_info or {}).get("bluetooth_mac")
         return [
             {
                 "category": "network",
@@ -497,7 +502,12 @@ class ChecklistEvaluator:
                 "check_name": "Bluetooth discoverability status",
                 "priority": "Nice to have",
                 "status": "PASS",
-                "details": "Informational — Bluetooth discoverability not blocking for admission",
+                "details": (
+                    f"Bluetooth interface present ({bt_mac}) — discoverability on/off state isn't "
+                    "observable via ADB inventory, verify manually if relevant to policy"
+                    if bt_mac else
+                    "No Bluetooth interface reported by this scan — informational only"
+                ),
             },
         ]
 
@@ -561,7 +571,14 @@ class ChecklistEvaluator:
     # ------------------------------------------------------------------
     # 7. Management Readiness
     # ------------------------------------------------------------------
-    def _management(self, platform: str) -> List[Dict[str, Any]]:
+    def _management(self, platform: str, device_info: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        # SIM presence/carrier is real, collected data (adb pulls sim_operator
+        # and sim_serial). There's no admin-configured "expected carrier" list
+        # in this system to match against, so this reports what was actually
+        # detected rather than claiming a match verification that doesn't run.
+        sim_operator = (device_info or {}).get("sim_operator")
+        sim_serial = (device_info or {}).get("sim_serial")
+        sim_present = bool(sim_operator or sim_serial)
         return [
             {
                 "category": "management",
@@ -578,8 +595,12 @@ class ChecklistEvaluator:
                 "category": "management",
                 "check_name": "SIM / eSIM present and matches expected carrier",
                 "priority": "Nice to have",
-                "status": "PASS",
-                "details": "Informational carrier check — not a standalone admission blocker",
+                "status": "PASS" if sim_present else "WARNING",
+                "details": (
+                    f"SIM detected — carrier: {sim_operator or 'unknown'}"
+                    if sim_present else
+                    "No SIM/eSIM detected on this device"
+                ),
             },
         ]
 
