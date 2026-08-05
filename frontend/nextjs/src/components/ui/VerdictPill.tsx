@@ -1,3 +1,4 @@
+import { motion } from 'framer-motion';
 import { CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -40,7 +41,11 @@ export function VerdictPill({
   const { style, label, Icon } = c;
 
   return (
-    <span
+    <motion.span
+      key={key}
+      initial={{ opacity: 0, scale: 0.7 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 22 }}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold tracking-wide',
         style,
@@ -49,7 +54,7 @@ export function VerdictPill({
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
       {label}
-    </span>
+    </motion.span>
   );
 }
 

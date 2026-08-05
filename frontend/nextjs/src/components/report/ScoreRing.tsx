@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { motion, useSpring } from 'framer-motion';
 import { cn } from '@/lib/utils';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -51,9 +53,9 @@ export function ScoreRing({
     '#16A34A';
 
   const glowColor =
-    clamped >= 75 ? 'rgba(220,38,38,0.12)' :
-    clamped >= 50 ? 'rgba(217,119,6,0.12)' :
-    'rgba(22,163,74,0.12)';
+    clamped >= 75 ? 'rgba(220,38,38,0.18)' :
+    clamped >= 50 ? 'rgba(217,119,6,0.16)' :
+    'rgba(22,163,74,0.14)';
 
   const scoreLabel =
     clamped >= 75 ? 'High Risk' :
@@ -61,17 +63,33 @@ export function ScoreRing({
     clamped >= 25 ? 'Low Risk' :
     'Minimal';
 
+  // Animated count-up: drive a spring toward the target score and mirror its
+  // rounded value into React state so the number ticks up in sync with the
+  // ring arc, instead of jumping straight to the final value.
+  const spring = useSpring(0, { stiffness: 55, damping: 18, mass: 0.9 });
+  const [display, setDisplay] = useState(0);
+
+  useEffect(() => {
+    spring.set(clamped);
+  }, [clamped, spring]);
+
+  useEffect(() => {
+    const unsub = spring.on('change', (v) => setDisplay(Math.round(v)));
+    return unsub;
+  }, [spring]);
+
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0, scale: 0.85 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
       className={cn('relative inline-flex flex-col items-center gap-2', className)}
     >
-      <div
+      <motion.div
         className="relative"
-        style={{
-          width: size,
-          height: size,
-          filter: `drop-shadow(0 0 12px ${glowColor})`,
-        }}
+        style={{ width: size, height: size }}
+        animate={{ filter: `drop-shadow(0 0 14px ${glowColor})` }}
+        transition={{ duration: 0.8 }}
       >
         <svg width={size} height={size} className="-rotate-90">
           {/* Track */}
@@ -84,7 +102,7 @@ export function ScoreRing({
             strokeWidth={stroke}
           />
           {/* Progress */}
-          <circle
+          <motion.circle
             cx={size / 2}
             cy={size / 2}
             r={r}
@@ -93,17 +111,33 @@ export function ScoreRing({
             strokeWidth={stroke}
             strokeLinecap="round"
             strokeDasharray={circumference}
-            strokeDashoffset={offset}
-            style={{ transition: 'stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)' }}
+            initial={{ strokeDashoffset: circumference }}
+            animate={{ strokeDashoffset: offset }}
+            transition={{ duration: 1.1, ease: [0.16, 1, 0.3, 1] }}
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-3xl font-bold tabular-nums text-ink">{clamped}</span>
+          <motion.span
+            key={label}
+            className="text-3xl font-bold tabular-nums text-ink"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15, duration: 0.4 }}
+          >
+            {display}
+          </motion.span>
           <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">{label}</span>
         </div>
-      </div>
-      <span className="text-xs font-medium text-muted">{scoreLabel}</span>
-    </div>
+      </motion.div>
+      <motion.span
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.6, duration: 0.4 }}
+        className="text-xs font-medium text-muted"
+      >
+        {scoreLabel}
+      </motion.span>
+    </motion.div>
   );
 }
 

@@ -24,6 +24,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Fingerprint,
+  Bug,
 } from 'lucide-react';
 import { ScanDetails, pdfUrl } from '@/lib/api';
 import { formatDate } from '@/lib/utils';
@@ -47,6 +48,11 @@ const TopAppsChart = dynamic(
 function ChartSkeleton() {
   return <div className="h-52 w-full animate-shimmer rounded-xl bg-gradient-to-r from-slate-100 via-slate-50 to-slate-100 bg-[length:200%_100%]" />;
 }
+
+const stagger = {
+  container: { hidden: {}, show: { transition: { staggerChildren: 0.04 } } },
+  item: { hidden: { opacity: 0, x: -8 }, show: { opacity: 1, x: 0, transition: { duration: 0.25 } } },
+};
 
 type Tab = 'overview' | 'checklist' | 'apps' | 'findings';
 
@@ -90,13 +96,44 @@ export function ProfessionalReport({
       const k = (a.risk_level || 'LOW').toUpperCase() as keyof typeof byLevel;
       if (k in byLevel) byLevel[k] += 1;
     }
-    const tags = buildTags(scan, mustFails.length, warn, fail);
-    return { pass, warn, fail, mustFails, byLevel, tags, apps, checklist };
+    return { pass, warn, fail, mustFails, byLevel, apps, checklist };
   }, [scan]);
 
   const riskyApps = useMemo(
     () => [...(scan.app_findings || [])].filter((a) => a.risk_score > 0).sort((a, b) => b.risk_score - a.risk_score),
     [scan]
+  );
+
+  // Apps flagged as genuine potential threats, not just "has some risk score".
+  // Two independent signals, both evidence-based rather than permission-count
+  // noise: (1) a YARA rule matched at high/critical severity — an actual
+  // malware-pattern hit, not a permission declaration; (2) the app combines
+  // Accessibility-service binding with Device Admin or Overlay — the classic
+  // screen-read + auto-click + draw-over-UI combination used by real Android
+  // banking trojans/spyware (Anubis, Cerberus, etc.), mirroring the same
+  // combination rule the backend's Must-fail checklist check uses.
+  const threats = useMemo(() => {
+    return (scan.app_findings || [])
+      .map((a) => {
+        const factors = a.risk_factors || [];
+        const yaraHits = factors.filter((f) => /^YARA:.*\((critical|high)\)/i.test(f));
+        const perms = (a.critical_permissions || []).join(' ').toUpperCase();
+        const hasAccessibility = perms.includes('ACCESSIBILITY');
+        const hasCompanion = perms.includes('DEVICE_ADMIN') || perms.includes('SYSTEM_ALERT') || perms.includes('OVERLAY');
+        const spywareCombo = hasAccessibility && hasCompanion;
+        const reasons = [
+          ...yaraHits.map((h) => h.replace(/^YARA:\s*/, '')),
+          ...(spywareCombo ? ['Accessibility-service binding combined with Device Admin/Overlay — spyware-like pattern'] : []),
+        ];
+        return { app: a, reasons };
+      })
+      .filter((t) => t.reasons.length > 0)
+      .sort((a, b) => b.app.risk_score - a.app.risk_score);
+  }, [scan]);
+
+  const tags = useMemo(
+    () => buildTags(scan, stats.mustFails.length, stats.warn, stats.fail, threats.length),
+    [scan, stats, threats]
   );
 
   const cve = useMemo(() => {
@@ -236,7 +273,7 @@ export function ProfessionalReport({
             {/* Tags */}
             <div className="flex flex-wrap items-center gap-2">
               <Tags className="h-4 w-4 text-muted shrink-0" />
-              {stats.tags.map((tag) => (
+              {tags.map((tag) => (
                 <span
                   key={tag.label}
                   className="rounded-md px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide"
@@ -339,6 +376,18 @@ export function ProfessionalReport({
             >
               <Icon className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">{t.label}</span>
+              {t.id === 'apps' && threats.length > 0 && (
+                <motion.span
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 20 }}
+                  className={`ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold ${
+                    active ? 'bg-white text-fail' : 'bg-fail text-white'
+                  }`}
+                >
+                  {threats.length}
+                </motion.span>
+              )}
             </button>
           );
         })}
@@ -348,6 +397,55 @@ export function ProfessionalReport({
       <AnimatePresence mode="wait">
         {tab === 'overview' && (
           <motion.div key="overview" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-6">
+            {/* Potential threats — evidence-based apps only (YARA critical/high hit,
+                or Accessibility-service binding combined with Device Admin/Overlay) */}
+            {threats.length > 0 && (
+              <motion.section
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4 }}
+                className="panel overflow-hidden border-fail/20"
+              >
+                <div className="flex items-center gap-3 border-b border-fail/15 bg-fail-soft/40 px-5 py-4">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-fail-soft text-fail">
+                    <Bug className="h-4.5 w-4.5" />
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-semibold text-fail-dark">Potential threats · {threats.length} app{threats.length > 1 ? 's' : ''}</h3>
+                    <p className="mt-0.5 text-xs text-muted">
+                      Spyware-like permission combinations or high/critical malware-pattern matches — review before admission
+                    </p>
+                  </div>
+                </div>
+                <motion.ul
+                  variants={stagger.container}
+                  initial="hidden"
+                  animate="show"
+                  className="divide-y divide-line"
+                >
+                  {threats.slice(0, 12).map(({ app, reasons }) => (
+                    <motion.li key={app.id} variants={stagger.item} className="flex items-start gap-3 px-5 py-3.5">
+                      <SeverityBadge level={app.risk_level} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-mono text-xs font-semibold text-ink">{app.package_name}</p>
+                        <ul className="mt-1 space-y-0.5">
+                          {reasons.map((r, i) => (
+                            <li key={i} className="text-xs text-muted">· {r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <span className="shrink-0 tabular-nums text-xs font-bold text-fail">{app.risk_score}</span>
+                    </motion.li>
+                  ))}
+                </motion.ul>
+                {threats.length > 12 && (
+                  <p className="border-t border-line px-5 py-2.5 text-xs text-muted">
+                    +{threats.length - 12} more — see the Applications tab, sorted by risk score.
+                  </p>
+                )}
+              </motion.section>
+            )}
+
             {/* Charts grid */}
             <div className="grid gap-5 lg:grid-cols-2">
               <ChartCard title="Application risk distribution" subtitle="Severity distribution across inventoried packages">
@@ -547,11 +645,18 @@ function MetaItem({
 
 function ChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
-    <section className="panel p-5">
+    <motion.section
+      initial={{ opacity: 0, y: 16, scale: 0.98 }}
+      whileInView={{ opacity: 1, y: 0, scale: 1 }}
+      viewport={{ once: true, margin: '-40px' }}
+      transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+      whileHover={{ y: -2 }}
+      className="panel p-5"
+    >
       <h3 className="text-sm font-semibold text-ink">{title}</h3>
       <p className="mt-0.5 text-xs text-muted">{subtitle}</p>
       <div className="mt-5">{children}</div>
-    </section>
+    </motion.section>
   );
 }
 
@@ -652,7 +757,7 @@ function SeverityBadge({ level }: { level: string }) {
   );
 }
 
-function buildTags(scan: ScanDetails, mustFails: number, warn: number, fail: number) {
+function buildTags(scan: ScanDetails, mustFails: number, warn: number, fail: number, threatCount: number) {
   const tags: { label: string; bg: string; fg: string }[] = [
     {
       label: scan.verdict,
@@ -673,6 +778,7 @@ function buildTags(scan: ScanDetails, mustFails: number, warn: number, fail: num
     const [bg, fg] = sevColors[scan.severity_tier.toLowerCase()] || ['#F8FAFC', '#475569'];
     tags.push({ label: scan.severity_tier, bg, fg });
   }
+  if (threatCount) tags.push({ label: `${threatCount} potential threat${threatCount > 1 ? 's' : ''}`, bg: '#FEE2E2', fg: '#B91C1C' });
   if (mustFails) tags.push({ label: `${mustFails} must fail`, bg: '#FEE2E2', fg: '#DC2626' });
   if (warn)     tags.push({ label: `${warn} warnings`,   bg: '#FEF3C7', fg: '#D97706' });
   if (scan.critical_apps_count) tags.push({ label: `${scan.critical_apps_count} critical apps`, bg: '#FFF7ED', fg: '#C2410C' });

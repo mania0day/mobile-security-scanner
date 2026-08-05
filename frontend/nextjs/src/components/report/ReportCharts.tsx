@@ -55,6 +55,10 @@ export function RiskDistributionChart({ apps }: { apps: AppFinding[] }) {
             outerRadius={82}
             paddingAngle={3}
             stroke="none"
+            isAnimationActive
+            animationBegin={0}
+            animationDuration={900}
+            animationEasing="ease-out"
           >
             {data.map((d) => (
               <Cell key={d.name} fill={riskColor(d.name)} />
@@ -115,7 +119,14 @@ export function CategoryHealthChart({ checklist }: { checklist: ChecklistItem[] 
               return [`${value}% — ${p?.pass || 0}P / ${p?.warn || 0}W / ${p?.fail || 0}F`, 'Health'];
             }}
           />
-          <Bar dataKey="health" radius={[0, 6, 6, 0]} barSize={12}>
+          <Bar
+            dataKey="health"
+            radius={[0, 6, 6, 0]}
+            barSize={12}
+            isAnimationActive
+            animationDuration={700}
+            animationEasing="ease-out"
+          >
             {data.map((d) => (
               <Cell
                 key={d.name}
@@ -165,7 +176,14 @@ export function TopAppsChart({ apps }: { apps: AppFinding[] }) {
             contentStyle={TOOLTIP_STYLE}
             formatter={(value: number, _n, props) => [`${value} (${props?.payload?.level})`, props?.payload?.full]}
           />
-          <Bar dataKey="score" radius={[0, 6, 6, 0]} barSize={11}>
+          <Bar
+            dataKey="score"
+            radius={[0, 6, 6, 0]}
+            barSize={11}
+            isAnimationActive
+            animationDuration={800}
+            animationEasing="ease-out"
+          >
             {data.map((d) => (
               <Cell key={d.full} fill={riskColor(d.level)} />
             ))}
