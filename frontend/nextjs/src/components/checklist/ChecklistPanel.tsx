@@ -41,6 +41,12 @@ const STATUS_ICON: Record<string, { Icon: typeof CheckCircle2; color: string }> 
   FAIL:    { Icon: XCircle,       color: 'text-fail' },
 };
 
+const STATUS_BADGE_STYLES: Record<string, string> = {
+  PASS:    'bg-pass-soft text-pass-dark border-pass/25',
+  WARNING: 'bg-warn-soft text-warn-dark border-warn/25',
+  FAIL:    'bg-fail-soft text-fail-dark border-fail/25',
+};
+
 function AccordionSection({
   catKey,
   index,
@@ -124,17 +130,24 @@ function AccordionSection({
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <p className="text-sm font-medium text-ink">{item.check_name}</p>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className={cn(
-                            'rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                            PRIORITY_STYLES[item.priority] || PRIORITY_STYLES['Nice to have']
-                          )}>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span
+                            title="Priority"
+                            className={cn(
+                              'rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide',
+                              PRIORITY_STYLES[item.priority] || PRIORITY_STYLES['Nice to have']
+                            )}
+                          >
                             {item.priority}
                           </span>
-                          <span className={cn(
-                            'text-[11px] font-semibold uppercase tracking-wide',
-                            item.status === 'FAIL' ? 'text-fail' : item.status === 'WARNING' ? 'text-warn' : 'text-pass'
-                          )}>
+                          <span
+                            title="Result"
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide',
+                              STATUS_BADGE_STYLES[item.status] || STATUS_BADGE_STYLES.PASS
+                            )}
+                          >
+                            <SIcon className="h-3 w-3" />
                             {item.status}
                           </span>
                         </div>
