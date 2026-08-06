@@ -6,9 +6,9 @@ isolated Docker microservices, and get back a PASS / CONDITIONAL / FAIL
 verdict plus a downloadable PDF admission certificate — backed by a
 Next.js dashboard and a scan history database.
 
-```
-   USB phone  ──▶  orchestrator.py  ──▶  per-service Docker containers  ──▶  risk_engine  ──▶  reports + SQLite  ──▶  Next.js dashboard
-```
+<p align="center">
+  <img src="images/scann-pipeline.png" alt="Scan pipeline: device → ADB/usbmux → APK inventory & extraction → static analysis → deep analysis → device checks → risk engine → reports → dashboard" width="100%">
+</p>
 
 ---
 
@@ -53,39 +53,19 @@ other directly — the host-side orchestrator (`backend/orchestrator/`) is the
 only thing that sequences them, using `docker compose run --rm` so nothing is
 left behind between scans.
 
-```
-                       ┌─────────────────────────────────────────┐
-                       │   orchestrator.py (host, Python)         │
-                       │   • picks the pipeline for platform+mode │
-                       │   • wipes stale per-service outputs      │
-                       │   • runs independent stages in parallel  │
-                       │   • runs dependent stages in sequence    │
-                       └───────────────┬───────────────────────────┘
-                                        │  docker compose run --rm <service>
-                                        ▼
-   ┌─────────┐   ┌──────────────┐   ┌────────────────────────────┐
-   │  adb /  │──▶│  inventory + │──▶│  analysis containers        │
-   │ios_device│   │  extraction  │   │  (apkid, androguard, cert,  │
-   └─────────┘   └──────────────┘   │  permission_analyzer, yara, │
-                                     │  root/jailbreak detection,  │
-                                     │  cve_checker, hash_lookup)  │
-                                     └───────────────┬─────────────┘
-                                                      ▼
-                                        ┌───────────────────────┐
-                                        │      risk_engine       │
-                                        │  8-category checklist  │
-                                        │  Must/Should/Nice eval  │
-                                        │  0–100 score + verdict │
-                                        └───────────┬─────────────┘
-                                                    ▼
-                                        ┌───────────────────────┐
-                                        │   report_generator     │
-                                        │  JSON/HTML/TXT/PDF      │
-                                        │  writes to SQLite too  │
-                                        └───────────┬─────────────┘
-                                                    ▼
-                              backend/api/server.py  ⇄  Next.js dashboard
-```
+<p align="center">
+  <img src="images/docker_architecture.png" alt="Docker architecture: Docker Compose orchestrating the device layer (ADB container), APK processing, analysis services, and core services, all reading/writing to shared volumes under backend/output" width="100%">
+</p>
+
+`orchestrator.py` (host, Python) picks the pipeline for the detected
+platform + scan mode, wipes stale per-service outputs, runs independent
+stages in parallel and dependent stages in sequence, and drives every step
+via `docker compose run --rm <service>`. The full step-by-step flow, from
+plugging in a device to the finished dashboard report, looks like this:
+
+<p align="center">
+  <img src="images/scannflow.png" alt="Mobile security scanner scan flow: Android device over USB/ADB, through device info, APK inventory and extraction, static analysis (APKID, Androguard, certificate, permissions, YARA), optional deep analysis (MobSF, VirusTotal, MVT), device/security checks (hash generator, root detection, CVE lookup, device checks), the risk engine, report generator, and the Next.js dashboard" width="100%">
+</p>
 
 Every container is built `FROM mobile-base:latest` — a shared base image
 with the Python/system dependencies every service needs, so per-service
